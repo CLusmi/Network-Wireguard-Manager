@@ -44,7 +44,7 @@ set -o pipefail
 # écrits en dur en français, ne sont pas concernés.
 export LC_ALL=C
 
-NM_VERSION="1.1.0"
+NM_VERSION="1.2.0"
 
 #--- Chemins système -----------------------------------------------------------
 # Tous surchargeables par variable d'environnement (utile pour les tests et
@@ -75,6 +75,7 @@ nm_init_paths() {
     NM_BACKUP_DIR="$NM_STATE_DIR/backups"
     NM_PORTS_HOST="$NM_STATE_DIR/ports-host.conf"
     NM_PORTS_DOCKER="$NM_STATE_DIR/ports-docker.conf"
+    NM_BANNED_IPS="$NM_STATE_DIR/banned-ips.conf"
     NM_RULES_V4="$NM_GEN_DIR/rules.v4"
     NM_RULES_V6="$NM_GEN_DIR/rules.v6"
     NM_RULES_V4_PREV="$NM_GEN_DIR/rules.v4.prev"

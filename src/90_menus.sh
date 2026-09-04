@@ -514,6 +514,111 @@ menu_firewall_setup() {
     return 0
 }
 
+# Choix d'accès pour un port à ouvrir → CHOSEN_SRCS (vide = tout Internet).
+# Retour 1 si une restriction était demandée mais qu'aucune IP n'est valide.
+menu_ask_port_sources() {
+    CHOSEN_SRCS=""
+    echo "  Qui pourra joindre ce port ?"
+    echo "    1) Tout Internet"
+    echo "    2) Seulement des IP précises (IPv4 ou CIDR — moins exposé)"
+    local acc
+    nm_ask acc "Accès [1] : " || true
+    [[ "$acc" == "2" ]] || return 0
+    local raw ip valid=""
+    nm_ask raw "IP autorisées (séparées par des espaces, ex. 212.114.16.76) : " || true
+    for ip in $raw; do
+        if is_valid_ipv4_cidr "$ip"; then
+            valid="${valid:+$valid }$ip"
+        else
+            msg_err "IP ignorée (invalide) : $ip"
+        fi
+    done
+    if [[ -z "$valid" ]]; then
+        msg_err "Aucune IP valide : ouverture annulée (le port reste fermé)."
+        return 1
+    fi
+    CHOSEN_SRCS="$valid"
+    return 0
+}
+
+menu_firewall_bans() {
+    while true; do
+        print_banner
+        print_section "🚫 IP bannies" "Blocage TOTAL : SSH, VPN, ports, conteneurs — même les connexions déjà établies"
+        if bans_list | grep -q .; then
+            echo "  IP actuellement bannies :"
+            bans_list | sed 's/^/    • /'
+        else
+            echo "  Aucune IP bannie."
+        fi
+        echo ""
+        echo "  1) Bannir une IP (IPv4, IPv6 ou plage CIDR)"
+        echo "  2) Débannir une IP"
+        echo ""
+        echo "  0) Retour"
+        echo ""
+        local c
+        nm_ask c "➜ Ton choix : " || return 0
+        case "$c" in
+            1)
+                local bip
+                nm_ask bip "IP à bannir (ex. 203.0.113.42 ou 203.0.113.0/24) : " || true
+                [[ -z "$bip" ]] && { msg_info "Annulé."; press_enter; continue; }
+                if ! is_valid_ipv4_cidr "$bip" && ! is_valid_ipv6_ish "$bip"; then
+                    msg_err "IP ou CIDR invalide : $bip"
+                    press_enter; continue
+                fi
+                # Garde-fou : se bannir soi-même coupe l'accès immédiatement
+                nm_load_fw_config
+                local self_ip="" a danger="no"
+                [[ -n "${SSH_CLIENT:-}" ]] && self_ip=$(awk '{print $1}' <<< "$SSH_CLIENT")
+                [[ -n "$self_ip" && "$bip" == "$self_ip" ]] && danger="yes"
+                for a in $ADMIN_IPS $ADMIN_IPS6; do
+                    [[ "$bip" == "$a" ]] && danger="yes"
+                done
+                if [[ "$danger" == "yes" ]]; then
+                    msg_warn "$bip est TON IP (session SSH actuelle ou IP admin du pare-feu) !"
+                    msg_warn "La bannir te coupera immédiatement l'accès au serveur."
+                    if ! ask_yn "Bannir quand même ?" "n"; then
+                        msg_info "Annulé — sage décision."
+                        press_enter; continue
+                    fi
+                elif ! ask_yn "Confirmer le bannissement de $bip ?" "o"; then
+                    msg_info "Annulé."
+                    press_enter; continue
+                fi
+                bans_add "$bip" && fw_apply \
+                    && msg_ok "$bip bannie : plus aucun accès au serveur (connexions en cours comprises)."
+                press_enter ;;
+            2)
+                if ! bans_list | grep -q .; then
+                    msg_info "Aucune IP bannie."
+                else
+                    local ips=() entry i=1 bc
+                    while IFS= read -r entry; do
+                        [[ -n "$entry" ]] || continue
+                        ips+=("$entry")
+                        printf "  %2d) %s\n" "$i" "$entry"
+                        i=$((i+1))
+                    done < <(bans_list)
+                    echo ""
+                    nm_ask bc "Numéro à débannir (0 = annuler) : " || true
+                    if [[ "$bc" == "0" || -z "$bc" ]]; then
+                        msg_info "Annulé."
+                    elif is_valid_int "$bc" && (( bc >= 1 && bc <= ${#ips[@]} )); then
+                        bans_remove "${ips[$((bc-1))]}" && fw_apply \
+                            && msg_ok "${ips[$((bc-1))]} débannie — accès rétabli."
+                    else
+                        msg_err "Choix invalide."
+                    fi
+                fi
+                press_enter ;;
+            0) return 0 ;;
+            *) msg_err "Choix invalide."; sleep 1 ;;
+        esac
+    done
+}
+
 menu_firewall() {
     nm_detect_env
     if [[ "$NM_ENV" == "pve-host" ]]; then
@@ -529,17 +634,18 @@ menu_firewall() {
     while true; do
         print_banner
         print_section "🔒 Pare-feu & sécurité" "Verrouille le serveur : SSH restreint, fail2ban, ports maîtrisés"
-        echo "  1) Configurer (SSH restreint + fail2ban + liste blanche)"
-        echo "  2) Ouvrir un port de l'hôte"
-        echo "  3) Fermer un port de l'hôte"
-        echo "  4) Exposer un port de conteneur Docker"
-        echo "  5) Refermer un port de conteneur Docker"
-        echo "  6) État de la sécurité"
-        echo "  7) Ré-appliquer les règles"
-        echo "  8) Revenir aux règles précédentes (rollback)"
-        echo "  9) ${C_RED}Désactiver le filtrage (secours)${C_NC}"
+        echo "   1) Configurer (SSH restreint + fail2ban + liste blanche)"
+        echo "   2) Ouvrir un port de l'hôte (à tous, ou à des IP choisies)"
+        echo "   3) Fermer un port de l'hôte"
+        echo "   4) Exposer un port de conteneur Docker (à tous, ou à des IP choisies)"
+        echo "   5) Refermer un port de conteneur Docker"
+        echo "   6) Bannir / débannir une IP (blocage total)"
+        echo "   7) État de la sécurité"
+        echo "   8) Ré-appliquer les règles"
+        echo "   9) Revenir aux règles précédentes (rollback)"
+        echo "  10) ${C_RED}Désactiver le filtrage (secours)${C_NC}"
         echo ""
-        echo "  0) Retour"
+        echo "   0) Retour"
         echo ""
         local c proto port pr
         nm_ask c "➜ Ton choix : " || return 0
@@ -550,15 +656,23 @@ menu_firewall() {
                 is_valid_port "${port:-}" || { msg_err "Port invalide."; press_enter; continue; }
                 nm_ask pr "Protocole (1=tcp, 2=udp) [1] : " || true
                 proto="tcp"; [[ "$pr" == "2" ]] && proto="udp"
-                ports_add "$NM_PORTS_HOST" "$proto" "$port" && fw_apply && msg_ok "Port $port/$proto ouvert." \
-                    && nm_nat_hint "${port}/${proto}"
+                menu_ask_port_sources || { press_enter; continue; }
+                if ports_add "$NM_PORTS_HOST" "$proto" "$port" "$CHOSEN_SRCS" && fw_apply; then
+                    if [[ -n "$CHOSEN_SRCS" ]]; then
+                        msg_ok "Port $port/$proto ouvert uniquement pour : $CHOSEN_SRCS"
+                        msg_info "Restriction par IPv4 : ce port n'est pas ouvert en IPv6."
+                    else
+                        msg_ok "Port $port/$proto ouvert à tout Internet."
+                    fi
+                    nm_nat_hint "${port}/${proto}"
+                fi
                 press_enter ;;
             3)
                 if ! ports_list "$NM_PORTS_HOST" | grep -q .; then
                     msg_info "Aucun port d'hôte ouvert."
                 else
                     echo "  Ports ouverts :"
-                    ports_list "$NM_PORTS_HOST" | sed 's/^/    /'
+                    ports_pretty "$NM_PORTS_HOST" | sed 's/^/    /'
                     nm_ask port "Port à fermer (ex. tcp:8080) : " || true
                     [[ "$port" != *:* ]] && port="tcp:$port"
                     ports_remove "$NM_PORTS_HOST" "${port%%:*}" "${port#*:}" && fw_apply && msg_ok "Port fermé."
@@ -575,24 +689,33 @@ menu_firewall() {
                     is_valid_port "${port:-}" || { msg_err "Port invalide."; press_enter; continue; }
                     nm_ask pr "Protocole (1=tcp, 2=udp) [1] : " || true
                     proto="tcp"; [[ "$pr" == "2" ]] && proto="udp"
-                    ports_add "$NM_PORTS_DOCKER" "$proto" "$port" && fw_apply && msg_ok "Port conteneur $port/$proto exposé." \
-                        && nm_nat_hint "${port}/${proto}"
+                    menu_ask_port_sources || { press_enter; continue; }
+                    if ports_add "$NM_PORTS_DOCKER" "$proto" "$port" "$CHOSEN_SRCS" && fw_apply; then
+                        if [[ -n "$CHOSEN_SRCS" ]]; then
+                            msg_ok "Port conteneur $port/$proto exposé uniquement pour : $CHOSEN_SRCS"
+                        else
+                            msg_ok "Port conteneur $port/$proto exposé à tout Internet."
+                        fi
+                        nm_nat_hint "${port}/${proto}"
+                    fi
                 fi
                 press_enter ;;
             5)
                 if ! ports_list "$NM_PORTS_DOCKER" | grep -q .; then
                     msg_info "Aucun port conteneur exposé."
                 else
-                    ports_list "$NM_PORTS_DOCKER" | sed 's/^/    /'
+                    echo "  Ports exposés :"
+                    ports_pretty "$NM_PORTS_DOCKER" | sed 's/^/    /'
                     nm_ask port "Port à refermer (ex. tcp:8080) : " || true
                     [[ "$port" != *:* ]] && port="tcp:$port"
                     ports_remove "$NM_PORTS_DOCKER" "${port%%:*}" "${port#*:}" && fw_apply && msg_ok "Port refermé."
                 fi
                 press_enter ;;
-            6) print_section "État de la sécurité"; fw_status; press_enter ;;
-            7) fw_apply_safe; press_enter ;;
-            8) fw_rollback; press_enter ;;
-            9)
+            6) menu_firewall_bans ;;
+            7) print_section "État de la sécurité"; fw_status; press_enter ;;
+            8) fw_apply_safe; press_enter ;;
+            9) fw_rollback; press_enter ;;
+            10)
                 msg_warn "Ceci désactive le filtrage INPUT (la plomberie VPN reste en place)."
                 if ask_yn "Confirmer ?" "n"; then
                     nm_load_fw_config

@@ -24,6 +24,9 @@ COMMANDES :
   fw safe-apply                 Applique avec filet anti-lockout (rollback auto 90 s)
   fw rollback                   Revient au rendu précédent
   fw status                     État du pare-feu
+  fw ban <ip>                   Bannit totalement une IP/CIDR (IPv4 ou IPv6)
+  fw unban <ip>                 Retire une IP de la liste des bannies
+  fw bans                       Liste les IP bannies
   fw detach                     Retire toutes les chaînes NM-* (désinstallation)
 
   wg install                    Installe le serveur WireGuard
@@ -127,6 +130,14 @@ cli_dispatch() {
                 safe-apply) fw_apply_safe ;;
                 rollback)   fw_rollback "$@" ;;
                 status)     fw_status ;;
+                ban)
+                    [[ -n "${1:-}" ]] || { msg_err "Usage : nwm fw ban <ip|cidr>"; return 1; }
+                    bans_add "$1" && fw_apply && msg_ok "$1 bannie : plus aucun accès au serveur." ;;
+                unban)
+                    [[ -n "${1:-}" ]] || { msg_err "Usage : nwm fw unban <ip|cidr>"; return 1; }
+                    bans_remove "$1" && fw_apply && msg_ok "$1 débannie — accès rétabli." ;;
+                bans)
+                    if bans_list | grep -q .; then bans_list; else msg_info "Aucune IP bannie."; fi ;;
                 detach)     fw_detach ;;
                 render)     nm_load_config; nm_load_fw_config; nm_detect_env; nm_detect_interface
                             [[ "$NM_ENV" == "pve-host" ]] && FW_ENABLED="no"

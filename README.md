@@ -78,7 +78,7 @@ Pensé pour un cas d'usage précis : **monter un VPN WireGuard sur un serveur po
 | 👥 **Clients** | Création guidée (nom → port forwardé → DNS → limite de débit), fichier `.conf` prêt à l'emploi + **QR code** dans le terminal, limites de débit par client (tc), **IP publique de sortie dédiée** par client si le serveur en a plusieurs. |
 | 🚀 **Optimisation** | Profil automatique selon la machine (bare-metal / VM / hôte Proxmox) : **BBR**, buffers dimensionnés d'après la RAM, conntrack, ring buffers, files multi-cœurs, **UDP-GRO forwarding** (décisif pour le débit WireGuard). Restauration d'origine en une option. |
 | 🐳 **Docker** | Installation depuis le **dépôt officiel** Docker, `daemon.json` sain écrit *avant* le premier démarrage (live-restore, rotation des logs, pools d'adresses qui n'entrent jamais en collision avec le VPN ni le LAN). |
-| 🔒 **Pare-feu** | Déclaratif : les règles sont **regénérées** entières depuis l'état et appliquées atomiquement dans des chaînes dédiées `NM-*` — les chaînes de Docker ne sont jamais touchées. SSH restreint à tes IP, fail2ban, **filet anti-lockout** (retour automatique aux règles précédentes en 90 s si tu perds la main). |
+| 🔒 **Pare-feu** | Déclaratif : les règles sont **regénérées** entières depuis l'état et appliquées atomiquement dans des chaînes dédiées `NM-*` — les chaînes de Docker ne sont jamais touchées. SSH restreint à tes IP, fail2ban, ports ouverts **à tout Internet ou seulement à des IP choisies**, **bannissement total d'IP** (prioritaire sur tout, connexions établies comprises), **filet anti-lockout** (retour automatique aux règles précédentes en 90 s si tu perds la main). |
 | 📈 **Supervision** | Monitoring temps réel **par client**, compteurs vnstat (jour / mois / total), débit instantané, test **iperf3** intégré. |
 | 💾 **Sauvegardes** | Une archive = tout l'état (clients, clés, pare-feu, réglages). Restauration qui regénère et réapplique tout. Sauvegarde automatique avant toute opération destructrice. |
 | 🧭 **Interface** | Menus en français, retour visible après chaque action, confirmations explicites, et tout est aussi **scriptable en CLI** (`nwm …`). |
@@ -194,12 +194,13 @@ Le moteur est **déclaratif** : à chaque application, les règles sont regéné
 | Option | Ce qu'elle fait |
 |---|---|
 | **1) Configurer** | Assistant : port SSH (détecté automatiquement) → **IP autorisées en SSH** (ta session actuelle est proposée par défaut ; sur IP dynamique, préfère la plage de ton FAI, ex. `82.65.0.0/16`) → IPv6 optionnelles → **filtrage des conteneurs Docker** (recommandé). Installe et configure **fail2ban**, puis applique avec le **filet anti-lockout**. |
-| **2) / 3) Ouvrir / fermer un port de l'hôte** | Liste blanche des ports du serveur lui-même (ex. `8080/tcp` pour un service web). |
-| **4) / 5) Exposer / refermer un port de conteneur** | Sans cette liste blanche, **un port publié par Docker est accessible depuis Internet même pare-feu fermé** (Docker contourne INPUT). Ici tu choisis exactement lesquels sont publics — indique le port *publié* côté hôte (le `8080` de `-p 8080:80`). |
-| **6) État de la sécurité** | Le bloc pare-feu du tableau de bord, seul. |
-| **7) Ré-appliquer les règles** | Regénère et réapplique tout, avec le filet anti-lockout. |
-| **8) Rollback** | Revient au rendu de règles précédent (conservé à chaque application). |
-| **9) Désactiver le filtrage (secours)** | Coupe le filtrage INPUT en gardant la plomberie du VPN. Porte de sortie en cas de souci. |
+| **2) / 3) Ouvrir / fermer un port de l'hôte** | Liste blanche des ports du serveur lui-même, avec le choix de l'exposition : **tout Internet**, ou **seulement des IP/plages précises** — ex. `22110/tcp` accessible uniquement depuis `212.114.16.76`. Un port restreint par IPv4 n'est pas ouvert en IPv6 (la restriction serait sinon contournable). Ré-ouvrir un port permet de changer sa restriction. |
+| **4) / 5) Exposer / refermer un port de conteneur** | Sans cette liste blanche, **un port publié par Docker est accessible depuis Internet même pare-feu fermé** (Docker contourne INPUT). Ici tu choisis exactement lesquels sont publics — indique le port *publié* côté hôte (le `8080` de `-p 8080:80`) — et pour qui : **tout Internet ou des IP choisies**, comme pour les ports de l'hôte. |
+| **6) Bannir / débannir une IP** | **Blocage total** d'une IP ou d'une plage CIDR (IPv4 ou IPv6) : les règles de bannissement sont placées **en tête de chaîne, avant même les connexions établies** — l'IP perd instantanément tout accès (SSH, VPN, ports, conteneurs), même une session en cours. Actif même pare-feu « désactivé ». Garde-fou intégré : si tu tentes de bannir ta propre IP (session SSH ou IP admin), le script te prévient avant. |
+| **7) État de la sécurité** | Le bloc pare-feu du tableau de bord : filtrage, SSH, conteneurs, fail2ban, **IP bannies** et liste détaillée des ports ouverts avec leur exposition. |
+| **8) Ré-appliquer les règles** | Regénère et réapplique tout, avec le filet anti-lockout. |
+| **9) Rollback** | Revient au rendu de règles précédent (conservé à chaque application). |
+| **10) Désactiver le filtrage (secours)** | Coupe le filtrage INPUT en gardant la plomberie du VPN (et les bannissements). Porte de sortie en cas de souci. |
 
 > [!IMPORTANT]
 > **Le filet anti-lockout** : avant d'appliquer, un timer systemd **hors session** est armé. Si les nouvelles règles te coupent le SSH, les règles précédentes reviennent **automatiquement en 90 s**. Si tout va bien, teste ta connexion dans un autre terminal et tape `ok` (tu as 60 s) pour désarmer le filet. Rien à faire de spécial en cas d'erreur : attends, et la main revient.
@@ -243,7 +244,7 @@ Les archives vivent dans `/etc/net-manager/backups/`. Une sauvegarde est aussi c
 
 - Créé automatiquement **à la racine du projet cloné** au premier client ; emplacement mémorisé ensuite (changeable : `nwm client export /chemin/absolu`).
 - Chaque client a son `<nom>.conf` prêt à l'emploi, **mis à jour automatiquement** à chaque changement (DNS, port, MTU, IP publique…) et supprimé avec le client.
-- Récupération depuis ton poste : `scp root@IP_DU_SERVEUR:/chemin/du/projet/vpn_clients/seedbox.conf .` — ou scanne directement le **QR code** pour un mobile.
+- Récupération depuis ton poste : `scp root@IP_DU_SERVEUR:/opt/Network-Wireguard-Manager/vpn_clients/seedbox.conf .` — ou scanne directement le **QR code** pour un mobile.
 
 > [!WARNING]
 > Ces fichiers contiennent les **clés privées** des clients. Le dossier est créé en `700`, les fichiers en `600`, et il est ignoré par git (`.gitignore`). Ne les transmets jamais par un canal non chiffré.
@@ -302,6 +303,8 @@ nwm client del seedbox                    # supprime tout (peer, NAT, tc, .conf)
 
 nwm fw status                             # état du pare-feu
 nwm fw safe-apply                         # applique avec filet anti-lockout
+nwm fw ban 203.0.113.42                   # bannit totalement une IP (ou un CIDR)
+nwm fw unban 203.0.113.42                 # la débannit
 nwm backup create                         # sauvegarde complète
 ```
 

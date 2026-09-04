@@ -48,7 +48,7 @@ set -o pipefail
 # écrits en dur en français, ne sont pas concernés.
 export LC_ALL=C
 
-NM_VERSION="1.1.0"
+NM_VERSION="1.2.0"
 
 #--- Chemins système -----------------------------------------------------------
 # Tous surchargeables par variable d'environnement (utile pour les tests et
@@ -79,6 +79,7 @@ nm_init_paths() {
     NM_BACKUP_DIR="$NM_STATE_DIR/backups"
     NM_PORTS_HOST="$NM_STATE_DIR/ports-host.conf"
     NM_PORTS_DOCKER="$NM_STATE_DIR/ports-docker.conf"
+    NM_BANNED_IPS="$NM_STATE_DIR/banned-ips.conf"
     NM_RULES_V4="$NM_GEN_DIR/rules.v4"
     NM_RULES_V6="$NM_GEN_DIR/rules.v6"
     NM_RULES_V4_PREV="$NM_GEN_DIR/rules.v4.prev"
@@ -507,7 +508,7 @@ nm_link_speed() {
 nm_state_init() {
     mkdir -p "$NM_STATE_DIR" "$NM_CLIENTS_DIR" "$NM_GEN_DIR" "$NM_BACKUP_DIR"
     chmod 700 "$NM_STATE_DIR" "$NM_CLIENTS_DIR"
-    touch "$NM_PORTS_HOST" "$NM_PORTS_DOCKER"
+    touch "$NM_PORTS_HOST" "$NM_PORTS_DOCKER" "$NM_BANNED_IPS"
 }
 
 #--- manager.conf : configuration globale --------------------------------------
@@ -692,27 +693,80 @@ client_next_port() {
 }
 
 #--- Listes de ports ouverts par le pare-feu (hôte + conteneurs) ---------------
-# Une ligne par port, au format proto:port (ex. tcp:8080).
+# Une ligne par port :
+#   proto:port                     ouvert à tout Internet (ex. tcp:8080)
+#   proto:port:src1,src2           ouvert UNIQUEMENT à ces IPv4/CIDR
+#                                  (ex. tcp:22110:212.114.16.76)
+# L'ancien format (proto:port) reste lu tel quel : pas de migration à faire.
 
 ports_list() {  # ports_list <fichier>
     [[ -f "$1" ]] || return 0
-    grep -E '^(tcp|udp):[0-9]+$' "$1" 2>/dev/null || true
+    grep -E '^(tcp|udp):[0-9]+(:[0-9./,]+)?$' "$1" 2>/dev/null || true
 }
 
-ports_add() {   # ports_add <fichier> <proto> <port>
-    local file="$1" proto="$2" port="$3"
+# ports_add <fichier> <proto> <port> [sources]
+# sources : IP/CIDR IPv4 séparées par des espaces — vide = ouvert à tous.
+# Ré-ajouter un port déjà présent remplace sa restriction précédente.
+ports_add() {
+    local file="$1" proto="$2" port="$3" sources="${4:-}" src joined=""
     is_valid_proto "$proto" && is_valid_port "$port" || { msg_err "Port ou protocole invalide."; return 1; }
+    for src in $sources; do
+        is_valid_ipv4_cidr "$src" || { msg_err "IP source invalide : $src (IPv4 ou CIDR attendu)"; return 1; }
+        joined="${joined:+$joined,}$src"
+    done
     nm_state_init
-    grep -qx "${proto}:${port}" "$file" 2>/dev/null && return 0
-    echo "${proto}:${port}" >> "$file"
+    ports_remove "$file" "$proto" "$port"
+    echo "${proto}:${port}${joined:+:$joined}" >> "$file"
 }
 
 ports_remove() { # ports_remove <fichier> <proto> <port>
     local file="$1" proto="$2" port="$3" tmp
     [[ -f "$file" ]] || return 0
     tmp="${file}.tmp"
-    grep -vx "${proto}:${port}" "$file" > "$tmp" || true
+    grep -vE "^${proto}:${port}(:|$)" "$file" > "$tmp" || true
     mv "$tmp" "$file"
+}
+
+# Liste lisible pour l'affichage : « tcp:8080 (tout Internet) » ou
+# « tcp:22110 → 212.114.16.76 ». ports_pretty <fichier>
+ports_pretty() {
+    local entry proto port srcs
+    while IFS=: read -r proto port srcs; do
+        [[ -n "$proto" ]] || continue
+        if [[ -n "$srcs" ]]; then
+            echo "${proto}:${port} → ${srcs//,/ }"
+        else
+            echo "${proto}:${port} (tout Internet)"
+        fi
+    done < <(ports_list "$1")
+}
+
+#--- IP bannies ----------------------------------------------------------------
+# Une IP ou plage CIDR par ligne (IPv4 et IPv6 mélangées : le rendu route
+# chaque entrée vers la bonne famille de règles). Un bannissement est TOTAL :
+# rendu en tête des chaînes INPUT/FORWARD/DOCKER-USER, avant même la règle
+# ESTABLISHED — les connexions déjà ouvertes de l'IP tombent aussi.
+
+bans_list() {
+    [[ -f "$NM_BANNED_IPS" ]] || return 0
+    grep -E '^[0-9a-fA-F.:/]+$' "$NM_BANNED_IPS" 2>/dev/null || true
+}
+
+bans_add() {
+    local ip="$1"
+    is_valid_ipv4_cidr "$ip" || is_valid_ipv6_ish "$ip" \
+        || { msg_err "IP ou CIDR invalide : $ip"; return 1; }
+    nm_state_init
+    grep -qx "$ip" "$NM_BANNED_IPS" 2>/dev/null && return 0
+    echo "$ip" >> "$NM_BANNED_IPS"
+}
+
+bans_remove() {
+    local ip="$1" tmp
+    [[ -f "$NM_BANNED_IPS" ]] || return 0
+    tmp="${NM_BANNED_IPS}.tmp"
+    grep -vx "$ip" "$NM_BANNED_IPS" > "$tmp" || true
+    mv "$tmp" "$NM_BANNED_IPS"
 }
 
 #=== src/10_firewall.sh ===
@@ -766,7 +820,7 @@ fw_render_v4() {
     echo "-F NM-PREROUTING"
     echo "-F NM-POSTROUTING"
     # DNAT/SNAT n'ont de sens que si le tunnel existe : ils pointent des IP VPN.
-    local name entry proto port
+    local name entry proto port srcs src
     if [[ "$wg_active" == "yes" ]]; then
         while IFS= read -r name; do
             [[ -n "$name" ]] || continue
@@ -800,6 +854,16 @@ fw_render_v4() {
     echo "-F NM-INPUT"
     echo "-F NM-FORWARD"
 
+    # IP bannies : EN TÊTE des chaînes, avant même ESTABLISHED — les
+    # connexions déjà ouvertes d'une IP bannie tombent immédiatement.
+    # Rendues même pare-feu « désactivé » (le jump NM-INPUT reste attaché).
+    local bip
+    while IFS= read -r bip; do
+        is_valid_ipv4_cidr "$bip" || continue
+        echo "-A NM-INPUT -s $bip -j DROP"
+        echo "-A NM-FORWARD -s $bip -j DROP"
+    done < <(bans_list)
+
     # FORWARD : le trafic du tunnel doit router quelle que soit la politique
     # de la chaîne (Docker met FORWARD en DROP à son installation).
     if [[ "$wg_active" == "yes" ]]; then
@@ -826,9 +890,18 @@ fw_render_v4() {
         else
             echo "-A NM-INPUT -p tcp --dport $SSH_PORT -j ACCEPT"
         fi
-        while IFS= read -r entry; do
-            proto="${entry%%:*}"; port="${entry#*:}"
-            echo "-A NM-INPUT -p $proto --dport $port -j ACCEPT"
+        # Ports de l'hôte : ouverts à tous, ou restreints à des IP sources
+        # (troisième champ de l'entrée, IPv4/CIDR séparées par des virgules).
+        while IFS=: read -r proto port srcs; do
+            [[ -n "$proto" ]] || continue
+            if [[ -n "$srcs" ]]; then
+                for src in ${srcs//,/ }; do
+                    is_valid_ipv4_cidr "$src" || continue
+                    echo "-A NM-INPUT -p $proto --dport $port -s $src -j ACCEPT"
+                done
+            else
+                echo "-A NM-INPUT -p $proto --dport $port -j ACCEPT"
+            fi
         done < <(ports_list "$NM_PORTS_HOST")
         echo "-A NM-INPUT -j DROP"
     fi
@@ -840,6 +913,12 @@ fw_render_v4() {
     # conntrack (--ctorigdstport).
     if [[ "$DOCKER_PROTECT" == "yes" ]]; then
         echo "-F DOCKER-USER"
+        # Les IP bannies n'atteignent pas non plus les conteneurs (avant
+        # ESTABLISHED : leurs connexions en cours tombent aussi).
+        while IFS= read -r bip; do
+            is_valid_ipv4_cidr "$bip" || continue
+            echo "-A DOCKER-USER -s $bip -j DROP"
+        done < <(bans_list)
         echo "-A DOCKER-USER -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN"
         if [[ "$wg_active" == "yes" ]]; then
             echo "-A DOCKER-USER -i $WG_IF -j RETURN"
@@ -849,9 +928,17 @@ fw_render_v4() {
             is_valid_ipv4_cidr "$ip" || continue
             echo "-A DOCKER-USER -i $wan -s $ip -j RETURN"
         done
-        while IFS= read -r entry; do
-            proto="${entry%%:*}"; port="${entry#*:}"
-            echo "-A DOCKER-USER -i $wan -p $proto -m conntrack --ctorigdstport $port --ctdir ORIGINAL -j RETURN"
+        # Ports de conteneurs : publics, ou restreints à des IP sources
+        while IFS=: read -r proto port srcs; do
+            [[ -n "$proto" ]] || continue
+            if [[ -n "$srcs" ]]; then
+                for src in ${srcs//,/ }; do
+                    is_valid_ipv4_cidr "$src" || continue
+                    echo "-A DOCKER-USER -i $wan -s $src -p $proto -m conntrack --ctorigdstport $port --ctdir ORIGINAL -j RETURN"
+                done
+            else
+                echo "-A DOCKER-USER -i $wan -p $proto -m conntrack --ctorigdstport $port --ctdir ORIGINAL -j RETURN"
+            fi
         done < <(ports_list "$NM_PORTS_DOCKER")
         echo "-A DOCKER-USER -i $wan -j DROP"
         echo "-A DOCKER-USER -j RETURN"
@@ -875,6 +962,14 @@ fw_render_v6() {
     echo "-F NM6-INPUT"
     echo "-F NM6-FORWARD"
 
+    # IP bannies (entrées IPv6 uniquement) : en tête, avant ESTABLISHED
+    local bip
+    while IFS= read -r bip; do
+        is_valid_ipv6_ish "$bip" || continue
+        echo "-A NM6-INPUT -s $bip -j DROP"
+        echo "-A NM6-FORWARD -s $bip -j DROP"
+    done < <(bans_list)
+
     if [[ "$wg_active" == "yes" ]]; then
         echo "-A NM6-FORWARD -i $WG_IF -j REJECT --reject-with icmp6-adm-prohibited"
     fi
@@ -890,13 +985,15 @@ fw_render_v6() {
         if [[ "$wg_active" == "yes" ]]; then
             echo "-A NM6-INPUT -p udp --dport $WG_PORT -j ACCEPT"
         fi
-        local ip entry proto port
+        local ip proto port srcs
         for ip in $ADMIN_IPS6; do
             is_valid_ipv6_ish "$ip" || continue
             echo "-A NM6-INPUT -p tcp --dport $SSH_PORT -s $ip -j ACCEPT"
         done
-        while IFS= read -r entry; do
-            proto="${entry%%:*}"; port="${entry#*:}"
+        # Un port restreint à des sources IPv4 n'est PAS ouvert en IPv6 :
+        # la restriction serait sinon contournable par l'adresse IPv6.
+        while IFS=: read -r proto port srcs; do
+            [[ -n "$proto" && -z "$srcs" ]] || continue
             echo "-A NM6-INPUT -p $proto --dport $port -j ACCEPT"
         done < <(ports_list "$NM_PORTS_HOST")
         echo "-A NM6-INPUT -j DROP"
@@ -1189,8 +1286,25 @@ fw_status() {
         echo "    Cohérence      : ${C_GREEN}règles appliquées = configuration${C_NC}"
     fi
     echo ""
-    echo "    Ports hôte ouverts      : $(ports_list "$NM_PORTS_HOST" | tr '\n' ' ')"
-    echo "    Ports conteneurs publics: $(ports_list "$NM_PORTS_DOCKER" | tr '\n' ' ')"
+    local nbans
+    nbans=$(bans_list | wc -l)
+    if [[ "$nbans" -gt 0 ]]; then
+        echo "    IP bannies     : ${C_RED}${nbans}${C_NC} — $(bans_list | tr '\n' ' ')"
+    else
+        echo "    IP bannies     : aucune"
+    fi
+    if ports_list "$NM_PORTS_HOST" | grep -q .; then
+        echo "    Ports hôte ouverts :"
+        ports_pretty "$NM_PORTS_HOST" | sed 's/^/      • /'
+    else
+        echo "    Ports hôte ouverts : aucun"
+    fi
+    if ports_list "$NM_PORTS_DOCKER" | grep -q .; then
+        echo "    Ports conteneurs publics :"
+        ports_pretty "$NM_PORTS_DOCKER" | sed 's/^/      • /'
+    else
+        echo "    Ports conteneurs publics : aucun"
+    fi
     return 0
 }
 
@@ -3055,7 +3169,7 @@ iperf_menu() {
             msg_info "Serveur iperf3 sur le port 5201 — Ctrl+C pour arrêter."
             msg_info "Depuis l'autre poste : iperf3 -c $(nm_main_src_ip 2>/dev/null || echo '<ip-serveur>')"
             nm_load_fw_config
-            if [[ "$FW_ENABLED" == "yes" ]] && ! ports_list "$NM_PORTS_HOST" | grep -qx "tcp:5201"; then
+            if [[ "$FW_ENABLED" == "yes" ]] && ! ports_list "$NM_PORTS_HOST" | grep -qE '^tcp:5201(:|$)'; then
                 msg_warn "Pare-feu actif : le port 5201/tcp n'est pas ouvert (menu Pare-feu → ouvrir un port)."
             fi
             iperf3 -s 2>&1 || true
@@ -3258,6 +3372,9 @@ COMMANDES :
   fw safe-apply                 Applique avec filet anti-lockout (rollback auto 90 s)
   fw rollback                   Revient au rendu précédent
   fw status                     État du pare-feu
+  fw ban <ip>                   Bannit totalement une IP/CIDR (IPv4 ou IPv6)
+  fw unban <ip>                 Retire une IP de la liste des bannies
+  fw bans                       Liste les IP bannies
   fw detach                     Retire toutes les chaînes NM-* (désinstallation)
 
   wg install                    Installe le serveur WireGuard
@@ -3361,6 +3478,14 @@ cli_dispatch() {
                 safe-apply) fw_apply_safe ;;
                 rollback)   fw_rollback "$@" ;;
                 status)     fw_status ;;
+                ban)
+                    [[ -n "${1:-}" ]] || { msg_err "Usage : nwm fw ban <ip|cidr>"; return 1; }
+                    bans_add "$1" && fw_apply && msg_ok "$1 bannie : plus aucun accès au serveur." ;;
+                unban)
+                    [[ -n "${1:-}" ]] || { msg_err "Usage : nwm fw unban <ip|cidr>"; return 1; }
+                    bans_remove "$1" && fw_apply && msg_ok "$1 débannie — accès rétabli." ;;
+                bans)
+                    if bans_list | grep -q .; then bans_list; else msg_info "Aucune IP bannie."; fi ;;
                 detach)     fw_detach ;;
                 render)     nm_load_config; nm_load_fw_config; nm_detect_env; nm_detect_interface
                             [[ "$NM_ENV" == "pve-host" ]] && FW_ENABLED="no"
@@ -3941,6 +4066,111 @@ menu_firewall_setup() {
     return 0
 }
 
+# Choix d'accès pour un port à ouvrir → CHOSEN_SRCS (vide = tout Internet).
+# Retour 1 si une restriction était demandée mais qu'aucune IP n'est valide.
+menu_ask_port_sources() {
+    CHOSEN_SRCS=""
+    echo "  Qui pourra joindre ce port ?"
+    echo "    1) Tout Internet"
+    echo "    2) Seulement des IP précises (IPv4 ou CIDR — moins exposé)"
+    local acc
+    nm_ask acc "Accès [1] : " || true
+    [[ "$acc" == "2" ]] || return 0
+    local raw ip valid=""
+    nm_ask raw "IP autorisées (séparées par des espaces, ex. 212.114.16.76) : " || true
+    for ip in $raw; do
+        if is_valid_ipv4_cidr "$ip"; then
+            valid="${valid:+$valid }$ip"
+        else
+            msg_err "IP ignorée (invalide) : $ip"
+        fi
+    done
+    if [[ -z "$valid" ]]; then
+        msg_err "Aucune IP valide : ouverture annulée (le port reste fermé)."
+        return 1
+    fi
+    CHOSEN_SRCS="$valid"
+    return 0
+}
+
+menu_firewall_bans() {
+    while true; do
+        print_banner
+        print_section "🚫 IP bannies" "Blocage TOTAL : SSH, VPN, ports, conteneurs — même les connexions déjà établies"
+        if bans_list | grep -q .; then
+            echo "  IP actuellement bannies :"
+            bans_list | sed 's/^/    • /'
+        else
+            echo "  Aucune IP bannie."
+        fi
+        echo ""
+        echo "  1) Bannir une IP (IPv4, IPv6 ou plage CIDR)"
+        echo "  2) Débannir une IP"
+        echo ""
+        echo "  0) Retour"
+        echo ""
+        local c
+        nm_ask c "➜ Ton choix : " || return 0
+        case "$c" in
+            1)
+                local bip
+                nm_ask bip "IP à bannir (ex. 203.0.113.42 ou 203.0.113.0/24) : " || true
+                [[ -z "$bip" ]] && { msg_info "Annulé."; press_enter; continue; }
+                if ! is_valid_ipv4_cidr "$bip" && ! is_valid_ipv6_ish "$bip"; then
+                    msg_err "IP ou CIDR invalide : $bip"
+                    press_enter; continue
+                fi
+                # Garde-fou : se bannir soi-même coupe l'accès immédiatement
+                nm_load_fw_config
+                local self_ip="" a danger="no"
+                [[ -n "${SSH_CLIENT:-}" ]] && self_ip=$(awk '{print $1}' <<< "$SSH_CLIENT")
+                [[ -n "$self_ip" && "$bip" == "$self_ip" ]] && danger="yes"
+                for a in $ADMIN_IPS $ADMIN_IPS6; do
+                    [[ "$bip" == "$a" ]] && danger="yes"
+                done
+                if [[ "$danger" == "yes" ]]; then
+                    msg_warn "$bip est TON IP (session SSH actuelle ou IP admin du pare-feu) !"
+                    msg_warn "La bannir te coupera immédiatement l'accès au serveur."
+                    if ! ask_yn "Bannir quand même ?" "n"; then
+                        msg_info "Annulé — sage décision."
+                        press_enter; continue
+                    fi
+                elif ! ask_yn "Confirmer le bannissement de $bip ?" "o"; then
+                    msg_info "Annulé."
+                    press_enter; continue
+                fi
+                bans_add "$bip" && fw_apply \
+                    && msg_ok "$bip bannie : plus aucun accès au serveur (connexions en cours comprises)."
+                press_enter ;;
+            2)
+                if ! bans_list | grep -q .; then
+                    msg_info "Aucune IP bannie."
+                else
+                    local ips=() entry i=1 bc
+                    while IFS= read -r entry; do
+                        [[ -n "$entry" ]] || continue
+                        ips+=("$entry")
+                        printf "  %2d) %s\n" "$i" "$entry"
+                        i=$((i+1))
+                    done < <(bans_list)
+                    echo ""
+                    nm_ask bc "Numéro à débannir (0 = annuler) : " || true
+                    if [[ "$bc" == "0" || -z "$bc" ]]; then
+                        msg_info "Annulé."
+                    elif is_valid_int "$bc" && (( bc >= 1 && bc <= ${#ips[@]} )); then
+                        bans_remove "${ips[$((bc-1))]}" && fw_apply \
+                            && msg_ok "${ips[$((bc-1))]} débannie — accès rétabli."
+                    else
+                        msg_err "Choix invalide."
+                    fi
+                fi
+                press_enter ;;
+            0) return 0 ;;
+            *) msg_err "Choix invalide."; sleep 1 ;;
+        esac
+    done
+}
+
 menu_firewall() {
     nm_detect_env
     if [[ "$NM_ENV" == "pve-host" ]]; then
@@ -3956,17 +4186,18 @@ menu_firewall() {
     while true; do
         print_banner
         print_section "🔒 Pare-feu & sécurité" "Verrouille le serveur : SSH restreint, fail2ban, ports maîtrisés"
-        echo "  1) Configurer (SSH restreint + fail2ban + liste blanche)"
-        echo "  2) Ouvrir un port de l'hôte"
-        echo "  3) Fermer un port de l'hôte"
-        echo "  4) Exposer un port de conteneur Docker"
-        echo "  5) Refermer un port de conteneur Docker"
-        echo "  6) État de la sécurité"
-        echo "  7) Ré-appliquer les règles"
-        echo "  8) Revenir aux règles précédentes (rollback)"
-        echo "  9) ${C_RED}Désactiver le filtrage (secours)${C_NC}"
+        echo "   1) Configurer (SSH restreint + fail2ban + liste blanche)"
+        echo "   2) Ouvrir un port de l'hôte (à tous, ou à des IP choisies)"
+        echo "   3) Fermer un port de l'hôte"
+        echo "   4) Exposer un port de conteneur Docker (à tous, ou à des IP choisies)"
+        echo "   5) Refermer un port de conteneur Docker"
+        echo "   6) Bannir / débannir une IP (blocage total)"
+        echo "   7) État de la sécurité"
+        echo "   8) Ré-appliquer les règles"
+        echo "   9) Revenir aux règles précédentes (rollback)"
+        echo "  10) ${C_RED}Désactiver le filtrage (secours)${C_NC}"
         echo ""
-        echo "  0) Retour"
+        echo "   0) Retour"
         echo ""
         local c proto port pr
         nm_ask c "➜ Ton choix : " || return 0
@@ -3977,15 +4208,23 @@ menu_firewall() {
                 is_valid_port "${port:-}" || { msg_err "Port invalide."; press_enter; continue; }
                 nm_ask pr "Protocole (1=tcp, 2=udp) [1] : " || true
                 proto="tcp"; [[ "$pr" == "2" ]] && proto="udp"
-                ports_add "$NM_PORTS_HOST" "$proto" "$port" && fw_apply && msg_ok "Port $port/$proto ouvert." \
-                    && nm_nat_hint "${port}/${proto}"
+                menu_ask_port_sources || { press_enter; continue; }
+                if ports_add "$NM_PORTS_HOST" "$proto" "$port" "$CHOSEN_SRCS" && fw_apply; then
+                    if [[ -n "$CHOSEN_SRCS" ]]; then
+                        msg_ok "Port $port/$proto ouvert uniquement pour : $CHOSEN_SRCS"
+                        msg_info "Restriction par IPv4 : ce port n'est pas ouvert en IPv6."
+                    else
+                        msg_ok "Port $port/$proto ouvert à tout Internet."
+                    fi
+                    nm_nat_hint "${port}/${proto}"
+                fi
                 press_enter ;;
             3)
                 if ! ports_list "$NM_PORTS_HOST" | grep -q .; then
                     msg_info "Aucun port d'hôte ouvert."
                 else
                     echo "  Ports ouverts :"
-                    ports_list "$NM_PORTS_HOST" | sed 's/^/    /'
+                    ports_pretty "$NM_PORTS_HOST" | sed 's/^/    /'
                     nm_ask port "Port à fermer (ex. tcp:8080) : " || true
                     [[ "$port" != *:* ]] && port="tcp:$port"
                     ports_remove "$NM_PORTS_HOST" "${port%%:*}" "${port#*:}" && fw_apply && msg_ok "Port fermé."
@@ -4002,24 +4241,33 @@ menu_firewall() {
                     is_valid_port "${port:-}" || { msg_err "Port invalide."; press_enter; continue; }
                     nm_ask pr "Protocole (1=tcp, 2=udp) [1] : " || true
                     proto="tcp"; [[ "$pr" == "2" ]] && proto="udp"
-                    ports_add "$NM_PORTS_DOCKER" "$proto" "$port" && fw_apply && msg_ok "Port conteneur $port/$proto exposé." \
-                        && nm_nat_hint "${port}/${proto}"
+                    menu_ask_port_sources || { press_enter; continue; }
+                    if ports_add "$NM_PORTS_DOCKER" "$proto" "$port" "$CHOSEN_SRCS" && fw_apply; then
+                        if [[ -n "$CHOSEN_SRCS" ]]; then
+                            msg_ok "Port conteneur $port/$proto exposé uniquement pour : $CHOSEN_SRCS"
+                        else
+                            msg_ok "Port conteneur $port/$proto exposé à tout Internet."
+                        fi
+                        nm_nat_hint "${port}/${proto}"
+                    fi
                 fi
                 press_enter ;;
             5)
                 if ! ports_list "$NM_PORTS_DOCKER" | grep -q .; then
                     msg_info "Aucun port conteneur exposé."
                 else
-                    ports_list "$NM_PORTS_DOCKER" | sed 's/^/    /'
+                    echo "  Ports exposés :"
+                    ports_pretty "$NM_PORTS_DOCKER" | sed 's/^/    /'
                     nm_ask port "Port à refermer (ex. tcp:8080) : " || true
                     [[ "$port" != *:* ]] && port="tcp:$port"
                     ports_remove "$NM_PORTS_DOCKER" "${port%%:*}" "${port#*:}" && fw_apply && msg_ok "Port refermé."
                 fi
                 press_enter ;;
-            6) print_section "État de la sécurité"; fw_status; press_enter ;;
-            7) fw_apply_safe; press_enter ;;
-            8) fw_rollback; press_enter ;;
-            9)
+            6) menu_firewall_bans ;;
+            7) print_section "État de la sécurité"; fw_status; press_enter ;;
+            8) fw_apply_safe; press_enter ;;
+            9) fw_rollback; press_enter ;;
+            10)
                 msg_warn "Ceci désactive le filtrage INPUT (la plomberie VPN reste en place)."
                 if ask_yn "Confirmer ?" "n"; then
                     nm_load_fw_config

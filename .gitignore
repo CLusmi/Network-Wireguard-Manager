@@ -1,0 +1,3 @@
+# Fichiers .conf des clients VPN : ils contiennent des clés privées.
+# Générés par le script dans ce dossier — ne JAMAIS les committer.
+vpn_clients/

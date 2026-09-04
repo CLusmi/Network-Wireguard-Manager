@@ -254,7 +254,7 @@ iperf_menu() {
             msg_info "Serveur iperf3 sur le port 5201 — Ctrl+C pour arrêter."
             msg_info "Depuis l'autre poste : iperf3 -c $(nm_main_src_ip 2>/dev/null || echo '<ip-serveur>')"
             nm_load_fw_config
-            if [[ "$FW_ENABLED" == "yes" ]] && ! ports_list "$NM_PORTS_HOST" | grep -qx "tcp:5201"; then
+            if [[ "$FW_ENABLED" == "yes" ]] && ! ports_list "$NM_PORTS_HOST" | grep -qE '^tcp:5201(:|$)'; then
                 msg_warn "Pare-feu actif : le port 5201/tcp n'est pas ouvert (menu Pare-feu → ouvrir un port)."
             fi
             iperf3 -s 2>&1 || true

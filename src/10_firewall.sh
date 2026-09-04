@@ -49,7 +49,7 @@ fw_render_v4() {
     echo "-F NM-PREROUTING"
     echo "-F NM-POSTROUTING"
     # DNAT/SNAT n'ont de sens que si le tunnel existe : ils pointent des IP VPN.
-    local name entry proto port
+    local name entry proto port srcs src
     if [[ "$wg_active" == "yes" ]]; then
         while IFS= read -r name; do
             [[ -n "$name" ]] || continue
@@ -83,6 +83,16 @@ fw_render_v4() {
     echo "-F NM-INPUT"
     echo "-F NM-FORWARD"
 
+    # IP bannies : EN TÊTE des chaînes, avant même ESTABLISHED — les
+    # connexions déjà ouvertes d'une IP bannie tombent immédiatement.
+    # Rendues même pare-feu « désactivé » (le jump NM-INPUT reste attaché).
+    local bip
+    while IFS= read -r bip; do
+        is_valid_ipv4_cidr "$bip" || continue
+        echo "-A NM-INPUT -s $bip -j DROP"
+        echo "-A NM-FORWARD -s $bip -j DROP"
+    done < <(bans_list)
+
     # FORWARD : le trafic du tunnel doit router quelle que soit la politique
     # de la chaîne (Docker met FORWARD en DROP à son installation).
     if [[ "$wg_active" == "yes" ]]; then
@@ -109,9 +119,18 @@ fw_render_v4() {
         else
             echo "-A NM-INPUT -p tcp --dport $SSH_PORT -j ACCEPT"
         fi
-        while IFS= read -r entry; do
-            proto="${entry%%:*}"; port="${entry#*:}"
-            echo "-A NM-INPUT -p $proto --dport $port -j ACCEPT"
+        # Ports de l'hôte : ouverts à tous, ou restreints à des IP sources
+        # (troisième champ de l'entrée, IPv4/CIDR séparées par des virgules).
+        while IFS=: read -r proto port srcs; do
+            [[ -n "$proto" ]] || continue
+            if [[ -n "$srcs" ]]; then
+                for src in ${srcs//,/ }; do
+                    is_valid_ipv4_cidr "$src" || continue
+                    echo "-A NM-INPUT -p $proto --dport $port -s $src -j ACCEPT"
+                done
+            else
+                echo "-A NM-INPUT -p $proto --dport $port -j ACCEPT"
+            fi
         done < <(ports_list "$NM_PORTS_HOST")
         echo "-A NM-INPUT -j DROP"
     fi
@@ -123,6 +142,12 @@ fw_render_v4() {
     # conntrack (--ctorigdstport).
     if [[ "$DOCKER_PROTECT" == "yes" ]]; then
         echo "-F DOCKER-USER"
+        # Les IP bannies n'atteignent pas non plus les conteneurs (avant
+        # ESTABLISHED : leurs connexions en cours tombent aussi).
+        while IFS= read -r bip; do
+            is_valid_ipv4_cidr "$bip" || continue
+            echo "-A DOCKER-USER -s $bip -j DROP"
+        done < <(bans_list)
         echo "-A DOCKER-USER -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN"
         if [[ "$wg_active" == "yes" ]]; then
             echo "-A DOCKER-USER -i $WG_IF -j RETURN"
@@ -132,9 +157,17 @@ fw_render_v4() {
             is_valid_ipv4_cidr "$ip" || continue
             echo "-A DOCKER-USER -i $wan -s $ip -j RETURN"
         done
-        while IFS= read -r entry; do
-            proto="${entry%%:*}"; port="${entry#*:}"
-            echo "-A DOCKER-USER -i $wan -p $proto -m conntrack --ctorigdstport $port --ctdir ORIGINAL -j RETURN"
+        # Ports de conteneurs : publics, ou restreints à des IP sources
+        while IFS=: read -r proto port srcs; do
+            [[ -n "$proto" ]] || continue
+            if [[ -n "$srcs" ]]; then
+                for src in ${srcs//,/ }; do
+                    is_valid_ipv4_cidr "$src" || continue
+                    echo "-A DOCKER-USER -i $wan -s $src -p $proto -m conntrack --ctorigdstport $port --ctdir ORIGINAL -j RETURN"
+                done
+            else
+                echo "-A DOCKER-USER -i $wan -p $proto -m conntrack --ctorigdstport $port --ctdir ORIGINAL -j RETURN"
+            fi
         done < <(ports_list "$NM_PORTS_DOCKER")
         echo "-A DOCKER-USER -i $wan -j DROP"
         echo "-A DOCKER-USER -j RETURN"
@@ -158,6 +191,14 @@ fw_render_v6() {
     echo "-F NM6-INPUT"
     echo "-F NM6-FORWARD"
 
+    # IP bannies (entrées IPv6 uniquement) : en tête, avant ESTABLISHED
+    local bip
+    while IFS= read -r bip; do
+        is_valid_ipv6_ish "$bip" || continue
+        echo "-A NM6-INPUT -s $bip -j DROP"
+        echo "-A NM6-FORWARD -s $bip -j DROP"
+    done < <(bans_list)
+
     if [[ "$wg_active" == "yes" ]]; then
         echo "-A NM6-FORWARD -i $WG_IF -j REJECT --reject-with icmp6-adm-prohibited"
     fi
@@ -173,13 +214,15 @@ fw_render_v6() {
         if [[ "$wg_active" == "yes" ]]; then
             echo "-A NM6-INPUT -p udp --dport $WG_PORT -j ACCEPT"
         fi
-        local ip entry proto port
+        local ip proto port srcs
         for ip in $ADMIN_IPS6; do
             is_valid_ipv6_ish "$ip" || continue
             echo "-A NM6-INPUT -p tcp --dport $SSH_PORT -s $ip -j ACCEPT"
         done
-        while IFS= read -r entry; do
-            proto="${entry%%:*}"; port="${entry#*:}"
+        # Un port restreint à des sources IPv4 n'est PAS ouvert en IPv6 :
+        # la restriction serait sinon contournable par l'adresse IPv6.
+        while IFS=: read -r proto port srcs; do
+            [[ -n "$proto" && -z "$srcs" ]] || continue
             echo "-A NM6-INPUT -p $proto --dport $port -j ACCEPT"
         done < <(ports_list "$NM_PORTS_HOST")
         echo "-A NM6-INPUT -j DROP"
@@ -472,8 +515,25 @@ fw_status() {
         echo "    Cohérence      : ${C_GREEN}règles appliquées = configuration${C_NC}"
     fi
     echo ""
-    echo "    Ports hôte ouverts      : $(ports_list "$NM_PORTS_HOST" | tr '\n' ' ')"
-    echo "    Ports conteneurs publics: $(ports_list "$NM_PORTS_DOCKER" | tr '\n' ' ')"
+    local nbans
+    nbans=$(bans_list | wc -l)
+    if [[ "$nbans" -gt 0 ]]; then
+        echo "    IP bannies     : ${C_RED}${nbans}${C_NC} — $(bans_list | tr '\n' ' ')"
+    else
+        echo "    IP bannies     : aucune"
+    fi
+    if ports_list "$NM_PORTS_HOST" | grep -q .; then
+        echo "    Ports hôte ouverts :"
+        ports_pretty "$NM_PORTS_HOST" | sed 's/^/      • /'
+    else
+        echo "    Ports hôte ouverts : aucun"
+    fi
+    if ports_list "$NM_PORTS_DOCKER" | grep -q .; then
+        echo "    Ports conteneurs publics :"
+        ports_pretty "$NM_PORTS_DOCKER" | sed 's/^/      • /'
+    else
+        echo "    Ports conteneurs publics : aucun"
+    fi
     return 0
 }
 

@@ -9,7 +9,7 @@
 nm_state_init() {
     mkdir -p "$NM_STATE_DIR" "$NM_CLIENTS_DIR" "$NM_GEN_DIR" "$NM_BACKUP_DIR"
     chmod 700 "$NM_STATE_DIR" "$NM_CLIENTS_DIR"
-    touch "$NM_PORTS_HOST" "$NM_PORTS_DOCKER"
+    touch "$NM_PORTS_HOST" "$NM_PORTS_DOCKER" "$NM_BANNED_IPS"
 }
 
 #--- manager.conf : configuration globale --------------------------------------
@@ -194,25 +194,78 @@ client_next_port() {
 }
 
 #--- Listes de ports ouverts par le pare-feu (hôte + conteneurs) ---------------
-# Une ligne par port, au format proto:port (ex. tcp:8080).
+# Une ligne par port :
+#   proto:port                     ouvert à tout Internet (ex. tcp:8080)
+#   proto:port:src1,src2           ouvert UNIQUEMENT à ces IPv4/CIDR
+#                                  (ex. tcp:22110:212.114.16.76)
+# L'ancien format (proto:port) reste lu tel quel : pas de migration à faire.
 
 ports_list() {  # ports_list <fichier>
     [[ -f "$1" ]] || return 0
-    grep -E '^(tcp|udp):[0-9]+$' "$1" 2>/dev/null || true
+    grep -E '^(tcp|udp):[0-9]+(:[0-9./,]+)?$' "$1" 2>/dev/null || true
 }
 
-ports_add() {   # ports_add <fichier> <proto> <port>
-    local file="$1" proto="$2" port="$3"
+# ports_add <fichier> <proto> <port> [sources]
+# sources : IP/CIDR IPv4 séparées par des espaces — vide = ouvert à tous.
+# Ré-ajouter un port déjà présent remplace sa restriction précédente.
+ports_add() {
+    local file="$1" proto="$2" port="$3" sources="${4:-}" src joined=""
     is_valid_proto "$proto" && is_valid_port "$port" || { msg_err "Port ou protocole invalide."; return 1; }
+    for src in $sources; do
+        is_valid_ipv4_cidr "$src" || { msg_err "IP source invalide : $src (IPv4 ou CIDR attendu)"; return 1; }
+        joined="${joined:+$joined,}$src"
+    done
     nm_state_init
-    grep -qx "${proto}:${port}" "$file" 2>/dev/null && return 0
-    echo "${proto}:${port}" >> "$file"
+    ports_remove "$file" "$proto" "$port"
+    echo "${proto}:${port}${joined:+:$joined}" >> "$file"
 }
 
 ports_remove() { # ports_remove <fichier> <proto> <port>
     local file="$1" proto="$2" port="$3" tmp
     [[ -f "$file" ]] || return 0
     tmp="${file}.tmp"
-    grep -vx "${proto}:${port}" "$file" > "$tmp" || true
+    grep -vE "^${proto}:${port}(:|$)" "$file" > "$tmp" || true
     mv "$tmp" "$file"
+}
+
+# Liste lisible pour l'affichage : « tcp:8080 (tout Internet) » ou
+# « tcp:22110 → 212.114.16.76 ». ports_pretty <fichier>
+ports_pretty() {
+    local entry proto port srcs
+    while IFS=: read -r proto port srcs; do
+        [[ -n "$proto" ]] || continue
+        if [[ -n "$srcs" ]]; then
+            echo "${proto}:${port} → ${srcs//,/ }"
+        else
+            echo "${proto}:${port} (tout Internet)"
+        fi
+    done < <(ports_list "$1")
+}
+
+#--- IP bannies ----------------------------------------------------------------
+# Une IP ou plage CIDR par ligne (IPv4 et IPv6 mélangées : le rendu route
+# chaque entrée vers la bonne famille de règles). Un bannissement est TOTAL :
+# rendu en tête des chaînes INPUT/FORWARD/DOCKER-USER, avant même la règle
+# ESTABLISHED — les connexions déjà ouvertes de l'IP tombent aussi.
+
+bans_list() {
+    [[ -f "$NM_BANNED_IPS" ]] || return 0
+    grep -E '^[0-9a-fA-F.:/]+$' "$NM_BANNED_IPS" 2>/dev/null || true
+}
+
+bans_add() {
+    local ip="$1"
+    is_valid_ipv4_cidr "$ip" || is_valid_ipv6_ish "$ip" \
+        || { msg_err "IP ou CIDR invalide : $ip"; return 1; }
+    nm_state_init
+    grep -qx "$ip" "$NM_BANNED_IPS" 2>/dev/null && return 0
+    echo "$ip" >> "$NM_BANNED_IPS"
+}
+
+bans_remove() {
+    local ip="$1" tmp
+    [[ -f "$NM_BANNED_IPS" ]] || return 0
+    tmp="${NM_BANNED_IPS}.tmp"
+    grep -vx "$ip" "$NM_BANNED_IPS" > "$tmp" || true
+    mv "$tmp" "$NM_BANNED_IPS"
 }
