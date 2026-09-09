@@ -4,7 +4,7 @@
 
 **Toute la gestion réseau d'un serveur Debian en un seul script : VPN WireGuard, optimisation réseau, Docker et pare-feu — piloté par un menu clair, en français.**
 
-![Version](https://img.shields.io/badge/version-1.1.0-2ea44f)
+![Version](https://img.shields.io/badge/version-4.3.0-2ea44f)
 ![Debian](https://img.shields.io/badge/Debian-12%20%7C%2013-A81D33?logo=debian&logoColor=white)
 ![Bash](https://img.shields.io/badge/bash-uniquement-4EAA25?logo=gnubash&logoColor=white)
 ![WireGuard](https://img.shields.io/badge/VPN-WireGuard-88171A?logo=wireguard&logoColor=white)
@@ -14,7 +14,7 @@
 
 ```text
   ════════════════════════════════════════════════════════════════════════════
-  NETWORK-WIREGUARD-MANAGER                                             v1.1.0
+  NETWORK-WIREGUARD-MANAGER                                             v4.3.0
   Optimisation réseau · VPN WireGuard · Docker · Pare-feu
   ════════════════════════════════════════════════════════════════════════════
 

@@ -44,7 +44,7 @@ set -o pipefail
 # écrits en dur en français, ne sont pas concernés.
 export LC_ALL=C
 
-NM_VERSION="1.3.0"
+NM_VERSION="4.3.0"
 
 #--- Chemins système -----------------------------------------------------------
 # Tous surchargeables par variable d'environnement (utile pour les tests et
