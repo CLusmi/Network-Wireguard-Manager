@@ -1,0 +1,5 @@
+# Les fins de ligne CRLF cassent bash (le shebang devient « /bin/bash\r » :
+# « ne peut exécuter : le fichier requis n'a pas été trouvé »). Quel que soit
+# le core.autocrlf de la machine qui clone, les scripts restent en LF.
+* text=auto
+*.sh text eol=lf
