@@ -48,7 +48,7 @@ set -o pipefail
 # écrits en dur en français, ne sont pas concernés.
 export LC_ALL=C
 
-NM_VERSION="4.3.0"
+NM_VERSION="4.3.1"
 
 #--- Chemins système -----------------------------------------------------------
 # Tous surchargeables par variable d'environnement (utile pour les tests et
@@ -2621,6 +2621,19 @@ if [ "$PROFILE" != "pve-host" ]; then
     done
 fi
 
+# --- Gouverneur CPU : performance ---------------------------------------------
+# En powersave, chaque rafale de paquets attend la remontée en fréquence du
+# cœur : pendant ces microsecondes, la file interne de WireGuard (1024
+# paquets, non réglable) déborde et droppe. Mesuré sur dédié Ryzen : +15 %
+# de débit tunnel en performance. Sur une VM sans cpufreq exposé, la boucle
+# ne matche rien : sans effet.
+GOV_N=0
+for GOV in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do
+    [ -w "$GOV" ] || continue
+    echo performance > "$GOV" 2>/dev/null && GOV_N=$((GOV_N+1))
+done
+[ "$GOV_N" -gt 0 ] && echo "nic-tune: gouverneur CPU performance (${GOV_N} coeurs)"
+
 exit 0
 TUNE_EOF
 }
@@ -2708,6 +2721,8 @@ opt_apply() {
         mkdir -p "$NM_BACKUP_DIR/sysctl-origin"
         sysctl -a > "$NM_BACKUP_DIR/sysctl-origin/sysctl-all.txt" 2>/dev/null || true
         [[ -f /etc/sysctl.conf ]] && cp /etc/sysctl.conf "$NM_BACKUP_DIR/sysctl-origin/" 2>/dev/null
+        cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor 2>/dev/null \
+            > "$NM_BACKUP_DIR/sysctl-origin/cpu-governor.txt" || true
         msg_ok "État sysctl d'origine sauvegardé ($NM_BACKUP_DIR/sysctl-origin)."
     fi
 
@@ -2790,6 +2805,25 @@ EOF
 
     echo ""
     msg_ok "Optimisation appliquée (profil $profile). Un reboot est conseillé pour les limites."
+
+    # Le socket UDP de WireGuard fige ses buffers à sa création : tant que le
+    # tunnel n'est pas recréé, il tourne avec les anciens (défauts Debian,
+    # ~200 Ko) et droppe sous charge. Un reboot le recrée aussi.
+    if systemctl is-active --quiet "wg-quick@${WG_IF:-wg0}" 2>/dev/null; then
+        echo ""
+        if [[ "$assume_yes" == "yes" ]]; then
+            msg_warn "Tunnel ${WG_IF:-wg0} actif : redémarre-le pour que le socket WireGuard"
+            msg_warn "adopte les nouveaux buffers : systemctl restart wg-quick@${WG_IF:-wg0}"
+        elif ask_yn "Redémarrer le tunnel maintenant pour appliquer les buffers WireGuard (coupure ~5 s pour tous les clients) ?" "o"; then
+            if systemctl restart "wg-quick@${WG_IF:-wg0}" 2>/dev/null; then
+                msg_ok "Tunnel ${WG_IF:-wg0} redémarré — nouveaux buffers actifs."
+            else
+                msg_err "Échec du redémarrage : journalctl -u wg-quick@${WG_IF:-wg0}"
+            fi
+        else
+            msg_info "À faire plus tard : systemctl restart wg-quick@${WG_IF:-wg0} (ou reboot)."
+        fi
+    fi
     return 0
 }
 
@@ -2809,6 +2843,18 @@ opt_restore() {
         msg_ok "irqbalance réactivé."
     fi
     rm -f "$NM_STATE_DIR/nic-tune.sh"
+
+    # Gouverneur CPU d'origine (sauvegardé lors de la première optimisation)
+    local orig_gov=""
+    [[ -f "$NM_BACKUP_DIR/sysctl-origin/cpu-governor.txt" ]] && \
+        orig_gov=$(cat "$NM_BACKUP_DIR/sysctl-origin/cpu-governor.txt" 2>/dev/null)
+    if [[ -n "$orig_gov" ]]; then
+        local g
+        for g in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do
+            [[ -w "$g" ]] && echo "$orig_gov" > "$g" 2>/dev/null
+        done
+        msg_ok "Gouverneur CPU restauré : $orig_gov"
+    fi
 
     # Valeurs par défaut de Debian pour les clés les plus impactantes
     sysctl -w net.core.default_qdisc=fq_codel >/dev/null 2>&1 || true
