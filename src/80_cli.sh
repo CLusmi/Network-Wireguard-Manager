@@ -45,6 +45,9 @@ COMMANDES :
   client set <nom> <champ> <valeur>
                                 Champs : ports | dl | ul | dns | exit-ip
 
+  bench install|status|remove   Service de mesure iperf3 (IP WireGuard interne seulement)
+  bench peer                    Crée/affiche le profil de test « labobox-bench »
+
   docker install|status|update|uninstall
   tc apply                      Reconstruit les limites de bande passante
   backup create|list|restore <archive>
@@ -153,6 +156,16 @@ cli_dispatch() {
                 sync)      wg_sync && fw_apply ;;
                 mtu)       wg_mtu_autodetect && wg_sync ;;
                 *) msg_err "Sous-commande wg inconnue : ${sub:-'(vide)'}"; return 1 ;;
+            esac ;;
+
+        bench)
+            local sub="${1:-status}"; shift || true
+            case "$sub" in
+                install) bench_svc_install ;;
+                remove)  bench_svc_remove ;;
+                status)  bench_svc_status ;;
+                peer)    bench_peer_ensure ;;
+                *) msg_err "Sous-commande bench inconnue : $sub (install|remove|status|peer)"; return 1 ;;
             esac ;;
 
         client)
