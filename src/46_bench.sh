@@ -85,6 +85,35 @@ bench_svc_status() {
     return 0
 }
 
+#--- Menu dédié du banc d'essai --------------------------------------------------
+# Accessible directement depuis « Supervision & trafic » : tout ce qu'il faut
+# côté serveur pour les bancs d'essai LaboBox, sans passer par la CLI.
+bench_menu() {
+    while true; do
+        print_banner
+        print_section "🧪 Banc d'essai LaboBox" "La cible que la VM mesure (menu Monitoring → Benchmarks côté LaboBox)"
+        bench_svc_status
+        echo ""
+        echo "  1) Activer le service de mesure (iperf3, IP WireGuard interne)"
+        echo "  2) Couper le service de mesure"
+        echo "  3) Profil de test « ${NM_BENCH_PEER} » (créer / afficher)"
+        echo ""
+        echo "  0) Retour"
+        echo ""
+        echo "  ${C_DIM}En CLI : nwm bench install | status | remove | peer${C_NC}"
+        echo ""
+        local c
+        nm_ask c "➜ Ton choix : " || return 0
+        case "$c" in
+            1) bench_svc_install; press_enter ;;
+            2) bench_svc_remove; press_enter ;;
+            3) bench_peer_ensure; press_enter ;;
+            0) return 0 ;;
+            *) msg_err "Choix invalide."; sleep 1 ;;
+        esac
+    done
+}
+
 #--- Peer de test « labobox-bench » ---------------------------------------------
 # Un client WireGuard comme les autres, réservé aux bancs d'essai : la VM
 # LaboBox l'utilise pour monter un tunnel éphémère vers CE serveur et le

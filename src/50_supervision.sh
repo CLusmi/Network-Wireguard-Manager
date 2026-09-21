@@ -245,21 +245,13 @@ iperf_menu() {
     print_section "Test de débit (iperf3)"
     echo "  1) Mode serveur (la machine écoute, teste depuis un autre poste)"
     echo "  2) Mode client (teste vers un serveur iperf3 distant)"
-    echo ""
-    echo "  ${C_DIM}── Banc d'essai LaboBox ──────────────────────────────────────${C_NC}"
-    echo "  3) Activer le service de mesure permanent (interne WireGuard)"
-    echo "  4) État du service de mesure"
-    echo "  5) Couper le service de mesure"
-    echo "  6) Profil de test « ${NM_BENCH_PEER} » (créer / afficher)"
+    echo "  3) Banc d'essai LaboBox (service de mesure + profil de test)"
     echo ""
     echo "  0) Retour"
     local c
     nm_ask c "Choix : " || return 0
     case "$c" in
-        3) bench_svc_install ;;
-        4) bench_svc_status ;;
-        5) bench_svc_remove ;;
-        6) bench_peer_ensure ;;
+        3) bench_menu ;;
         1)
             msg_info "Serveur iperf3 sur le port 5201 — Ctrl+C pour arrêter."
             msg_info "Depuis l'autre poste : iperf3 -c $(nm_main_src_ip 2>/dev/null || echo '<ip-serveur>')"

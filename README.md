@@ -4,7 +4,7 @@
 
 **Toute la gestion réseau d'un serveur Debian en un seul script : VPN WireGuard, optimisation réseau, Docker et pare-feu — piloté par un menu clair, en français.**
 
-![Version](https://img.shields.io/badge/version-4.3.2-2ea44f)
+![Version](https://img.shields.io/badge/version-4.3.3-2ea44f)
 ![Debian](https://img.shields.io/badge/Debian-12%20%7C%2013-A81D33?logo=debian&logoColor=white)
 ![Bash](https://img.shields.io/badge/bash-uniquement-4EAA25?logo=gnubash&logoColor=white)
 ![WireGuard](https://img.shields.io/badge/VPN-WireGuard-88171A?logo=wireguard&logoColor=white)
@@ -14,7 +14,7 @@
 
 ```text
   ════════════════════════════════════════════════════════════════════════════
-  NETWORK-WIREGUARD-MANAGER                                             v4.3.2
+  NETWORK-WIREGUARD-MANAGER                                             v4.3.3
   Optimisation réseau · VPN WireGuard · Docker · Pare-feu
   ════════════════════════════════════════════════════════════════════════════
 
@@ -215,7 +215,8 @@ Sur un **hôte Proxmox**, ce menu s'efface si pve-firewall est actif ; s'il est 
 | **2) / 3) / 4) Trafic jour / mois / total** | Compteurs vnstat pour l'interface publique et le tunnel (vnstat est installé automatiquement à la première utilisation). |
 | **5) Débit en direct** | Débit instantané d'une interface (publique ou tunnel), `Ctrl+C` pour arrêter. |
 | **6) Test de débit iperf3** | **Mode serveur** : la machine écoute sur 5201 (avec rappel si le pare-feu bloque ce port) — teste depuis un autre poste. **Mode client** : vers un serveur distant (ex. `ping.online.net`), port paramétrable (beaucoup de serveurs publics écoutent sur 5200-5209), deux passes automatiques : débit montant puis descendant. En cas d'échec, l'erreur et ses causes probables s'affichent. |
-| **7) Voir les fichiers générés** | Affiche règles, `wg0.conf`, sysctl, configuration… **avec les clés privées masquées**. |
+| **7) Banc d'essai LaboBox** | Tout ce que le manager LaboBox attend côté serveur, au même endroit : **activer / couper le service de mesure** (iperf3 en écoute sur l'IP WireGuard **interne** uniquement — jamais exposé à Internet) et **créer / afficher le profil de test** `labobox-bench`, le client WireGuard dédié aux mesures. L'état du service s'affiche en haut du menu. Équivalent CLI : `nwm bench install\|status\|remove\|peer`. |
+| **8) Voir les fichiers générés** | Affiche règles, `wg0.conf`, sysctl, configuration… **avec les clés privées masquées**. |
 
 ### 8 · Sauvegardes
 
@@ -307,6 +308,8 @@ nwm fw status                             # état du pare-feu
 nwm fw safe-apply                         # applique avec filet anti-lockout
 nwm fw ban 203.0.113.42                   # bannit totalement une IP (ou un CIDR)
 nwm fw unban 203.0.113.42                 # la débannit
+nwm bench install                         # service de mesure iperf3 (IP interne)
+nwm bench peer                            # profil de test « labobox-bench »
 nwm backup create                         # sauvegarde complète
 ```
 

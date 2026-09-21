@@ -48,7 +48,7 @@ set -o pipefail
 # écrits en dur en français, ne sont pas concernés.
 export LC_ALL=C
 
-NM_VERSION="4.3.2"
+NM_VERSION="4.3.3"
 
 #--- Chemins système -----------------------------------------------------------
 # Tous surchargeables par variable d'environnement (utile pour les tests et
@@ -3056,6 +3056,35 @@ bench_svc_status() {
     return 0
 }
 
+#--- Menu dédié du banc d'essai --------------------------------------------------
+# Accessible directement depuis « Supervision & trafic » : tout ce qu'il faut
+# côté serveur pour les bancs d'essai LaboBox, sans passer par la CLI.
+bench_menu() {
+    while true; do
+        print_banner
+        print_section "🧪 Banc d'essai LaboBox" "La cible que la VM mesure (menu Monitoring → Benchmarks côté LaboBox)"
+        bench_svc_status
+        echo ""
+        echo "  1) Activer le service de mesure (iperf3, IP WireGuard interne)"
+        echo "  2) Couper le service de mesure"
+        echo "  3) Profil de test « ${NM_BENCH_PEER} » (créer / afficher)"
+        echo ""
+        echo "  0) Retour"
+        echo ""
+        echo "  ${C_DIM}En CLI : nwm bench install | status | remove | peer${C_NC}"
+        echo ""
+        local c
+        nm_ask c "➜ Ton choix : " || return 0
+        case "$c" in
+            1) bench_svc_install; press_enter ;;
+            2) bench_svc_remove; press_enter ;;
+            3) bench_peer_ensure; press_enter ;;
+            0) return 0 ;;
+            *) msg_err "Choix invalide."; sleep 1 ;;
+        esac
+    done
+}
+
 #--- Peer de test « labobox-bench » ---------------------------------------------
 # Un client WireGuard comme les autres, réservé aux bancs d'essai : la VM
 # LaboBox l'utilise pour monter un tunnel éphémère vers CE serveur et le
@@ -3335,21 +3364,13 @@ iperf_menu() {
     print_section "Test de débit (iperf3)"
     echo "  1) Mode serveur (la machine écoute, teste depuis un autre poste)"
     echo "  2) Mode client (teste vers un serveur iperf3 distant)"
-    echo ""
-    echo "  ${C_DIM}── Banc d'essai LaboBox ──────────────────────────────────────${C_NC}"
-    echo "  3) Activer le service de mesure permanent (interne WireGuard)"
-    echo "  4) État du service de mesure"
-    echo "  5) Couper le service de mesure"
-    echo "  6) Profil de test « ${NM_BENCH_PEER} » (créer / afficher)"
+    echo "  3) Banc d'essai LaboBox (service de mesure + profil de test)"
     echo ""
     echo "  0) Retour"
     local c
     nm_ask c "Choix : " || return 0
     case "$c" in
-        3) bench_svc_install ;;
-        4) bench_svc_status ;;
-        5) bench_svc_remove ;;
-        6) bench_peer_ensure ;;
+        3) bench_menu ;;
         1)
             msg_info "Serveur iperf3 sur le port 5201 — Ctrl+C pour arrêter."
             msg_info "Depuis l'autre poste : iperf3 -c $(nm_main_src_ip 2>/dev/null || echo '<ip-serveur>')"
@@ -4539,7 +4560,8 @@ menu_supervision() {
         echo "  4) Trafic total cumulé (vnstat)"
         echo "  5) Débit en direct (interface)"
         echo "  6) Test de débit iperf3"
-        echo "  7) Voir les fichiers générés"
+        echo "  7) Banc d'essai LaboBox (service de mesure interne)"
+        echo "  8) Voir les fichiers générés"
         echo ""
         echo "  0) Retour"
         echo ""
@@ -4558,7 +4580,8 @@ menu_supervision() {
                 traffic_live "$iface"
                 press_enter ;;
             6) iperf_menu; press_enter ;;
-            7) view_generated_files; press_enter ;;
+            7) bench_menu ;;
+            8) view_generated_files; press_enter ;;
             0) return 0 ;;
             *) msg_err "Choix invalide."; sleep 1 ;;
         esac

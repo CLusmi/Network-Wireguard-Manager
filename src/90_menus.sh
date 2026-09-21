@@ -789,7 +789,8 @@ menu_supervision() {
         echo "  4) Trafic total cumulé (vnstat)"
         echo "  5) Débit en direct (interface)"
         echo "  6) Test de débit iperf3"
-        echo "  7) Voir les fichiers générés"
+        echo "  7) Banc d'essai LaboBox (service de mesure interne)"
+        echo "  8) Voir les fichiers générés"
         echo ""
         echo "  0) Retour"
         echo ""
@@ -808,7 +809,8 @@ menu_supervision() {
                 traffic_live "$iface"
                 press_enter ;;
             6) iperf_menu; press_enter ;;
-            7) view_generated_files; press_enter ;;
+            7) bench_menu ;;
+            8) view_generated_files; press_enter ;;
             0) return 0 ;;
             *) msg_err "Choix invalide."; sleep 1 ;;
         esac
