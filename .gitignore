@@ -1,0 +1,4 @@
+# Fichiers .conf des clients, exportés par le script à côté de lui
+# (dossier vpn_clients/) : ils contiennent les CLÉS PRIVÉES des clients
+# WireGuard — ils ne doivent jamais partir dans git.
+vpn_clients/
