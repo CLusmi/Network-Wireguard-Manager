@@ -54,7 +54,7 @@ bench_svc_install() {
     nm_load_config
     if systemctl is-active --quiet nwm-bench.service; then
         msg_ok "iperf3 en écoute sur ${SERVER_IP}:5201 — réseau WireGuard uniquement."
-        msg_info "Les benchs LaboBox (menu Monitoring → Benchmarks) l'utiliseront"
+        msg_info "Les benchs LaboBox (menu principal → 5 Benchmarks) l'utiliseront"
         msg_info "automatiquement pour mesurer le tunnel dans les deux sens."
     else
         msg_err "Le service n'a pas démarré : journalctl -u nwm-bench"
@@ -91,7 +91,7 @@ bench_svc_status() {
 bench_menu() {
     while true; do
         print_banner
-        print_section "🧪 Banc d'essai LaboBox" "La cible que la VM mesure (menu Monitoring → Benchmarks côté LaboBox)"
+        print_section "🧪 Banc d'essai LaboBox" "La cible que la VM mesure (LaboBox : menu principal → 5 Benchmarks)"
         bench_svc_status
         echo ""
         echo "  1) Activer le service de mesure (iperf3, IP WireGuard interne)"
@@ -141,7 +141,7 @@ bench_peer_ensure() {
     sed 's/^/  /' "$conf_file"
     echo "  ${C_DIM}───────────────────────────────────────────────────────────────${C_NC}"
     echo ""
-    msg_info "Sur la VM : Monitoring → Benchmarks → « Tester un serveur VPN »,"
+    msg_info "Sur la VM : menu 5 Benchmarks → « Tester un serveur VPN candidat »,"
     msg_info "le manager demandera ce fichier à la première mesure de ce serveur."
     return 0
 }

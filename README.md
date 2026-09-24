@@ -4,7 +4,7 @@
 
 **Toute la gestion réseau d'un serveur Debian en un seul script : VPN WireGuard, optimisation réseau, Docker et pare-feu — piloté par un menu clair, en français.**
 
-![Version](https://img.shields.io/badge/version-4.3.4-2ea44f)
+![Version](https://img.shields.io/badge/version-5.0.0-2ea44f)
 ![Debian](https://img.shields.io/badge/Debian-12%20%7C%2013-A81D33?logo=debian&logoColor=white)
 ![Bash](https://img.shields.io/badge/bash-uniquement-4EAA25?logo=gnubash&logoColor=white)
 ![WireGuard](https://img.shields.io/badge/VPN-WireGuard-88171A?logo=wireguard&logoColor=white)
@@ -14,7 +14,7 @@
 
 ```text
   ════════════════════════════════════════════════════════════════════════════
-  NETWORK-WIREGUARD-MANAGER                                             v4.3.4
+  NETWORK-WIREGUARD-MANAGER                                             v5.0.0
   Optimisation réseau · VPN WireGuard · Docker · Pare-feu
   ════════════════════════════════════════════════════════════════════════════
 
@@ -65,8 +65,10 @@ Pensé pour un cas d'usage précis : **monter un VPN WireGuard sur un serveur po
 7. [Proxmox : hôte et VM](#-proxmox--hôte-et-vm)
 8. [Ligne de commande (`nwm`)](#-ligne-de-commande-nwm)
 9. [Ce que le script installe sur la machine](#-ce-que-le-script-installe-sur-la-machine)
-10. [Dépannage rapide](#-dépannage-rapide)
-11. [Structure du dépôt & développement](#-structure-du-dépôt--développement)
+10. [Avec LaboBox-VPN](#-avec-labobox-vpn)
+11. [Dépannage rapide](#-dépannage-rapide)
+12. [Structure du dépôt & développement](#-structure-du-dépôt--développement)
+13. [Version 5.0.0](#-version-500)
 
 ---
 
@@ -76,10 +78,10 @@ Pensé pour un cas d'usage précis : **monter un VPN WireGuard sur un serveur po
 |---|---|
 | 🔐 **VPN WireGuard** | Installation complète en une option : clés, IP publique, port, **sonde du MTU réel** (ping DF par dichotomie), service systemd. `wg0.conf` est *généré* depuis l'état — jamais édité à la main. |
 | 👥 **Clients** | Création guidée (nom → port forwardé → DNS → limite de débit), fichier `.conf` prêt à l'emploi + **QR code** dans le terminal, limites de débit par client (tc), **IP publique de sortie dédiée** par client si le serveur en a plusieurs. |
-| 🚀 **Optimisation** | Profil automatique selon la machine (bare-metal / VM / hôte Proxmox) : **BBR**, buffers dimensionnés d'après la RAM, conntrack, ring buffers, files multi-cœurs, **UDP-GRO forwarding** (décisif pour le débit WireGuard). Restauration d'origine en une option. |
+| 🚀 **Optimisation** | Profil automatique selon la machine (bare-metal / VM / hôte Proxmox) : **BBR**, buffers dimensionnés d'après la RAM, conntrack, ring buffers, files multi-cœurs, **UDP-GRO forwarding** (décisif pour le débit WireGuard), **CPU en mode performance**, IPv6 de l'hôte coupé. Tout s'applique à chaud, sans couper le tunnel. Restauration d'origine en une option. |
 | 🐳 **Docker** | Installation depuis le **dépôt officiel** Docker, `daemon.json` sain écrit *avant* le premier démarrage (live-restore, rotation des logs, pools d'adresses qui n'entrent jamais en collision avec le VPN ni le LAN). |
 | 🔒 **Pare-feu** | Déclaratif : les règles sont **regénérées** entières depuis l'état et appliquées atomiquement dans des chaînes dédiées `NM-*` — les chaînes de Docker ne sont jamais touchées. SSH restreint à tes IP, fail2ban, ports ouverts **à tout Internet ou seulement à des IP choisies**, **bannissement total d'IP** (prioritaire sur tout, connexions établies comprises), **filet anti-lockout** (retour automatique aux règles précédentes en 90 s si tu perds la main). |
-| 📈 **Supervision** | Monitoring temps réel **par client**, compteurs vnstat (jour / mois / total), débit instantané, test **iperf3** intégré. |
+| 📈 **Supervision** | Monitoring temps réel **par client**, compteurs vnstat (jour / mois / total), débit instantané, test **iperf3** intégré, et **banc d'essai LaboBox** (service de mesure interne au tunnel). |
 | 💾 **Sauvegardes** | Une archive = tout l'état (clients, clés, pare-feu, réglages). Restauration qui regénère et réapplique tout. Sauvegarde automatique avant toute opération destructrice. |
 | 🧭 **Interface** | Menus en français, retour visible après chaque action, confirmations explicites, et tout est aussi **scriptable en CLI** (`nwm …`). |
 
@@ -139,7 +141,7 @@ L'état complet de la machine en un écran, sans rien modifier :
 
 | Option | Ce qu'elle fait |
 |---|---|
-| **1) Appliquer l'optimisation** | Analyse CPU, RAM et carte réseau, puis applique le profil adapté à l'environnement détecté : congestion **BBR** + qdisc `fq`, buffers TCP/UDP dimensionnés d'après la RAM, table conntrack agrandie, `swappiness` abaissé, et tuning de la carte (files multi-cœurs `ethtool -L`, ring buffers, offloads dont **UDP-GRO forwarding**, RPS/XPS), et **IPv6 de l'hôte désactivé** — toute la stack est IPv4, couper l'IPv6 évite les bordures v6 mal servies et les fuites silencieuses. L'état d'origine est sauvegardé **avant** la première application. |
+| **1) Appliquer l'optimisation** | Analyse CPU, RAM et carte réseau, puis applique le profil adapté à l'environnement détecté : congestion **BBR** + qdisc `fq`, buffers TCP/UDP dimensionnés d'après la RAM, table conntrack agrandie, `swappiness` abaissé, et tuning de la carte (files multi-cœurs `ethtool -L`, ring buffers, offloads dont **UDP-GRO forwarding**, affinité des IRQ — y compris sur carte virtio —, RPS/XPS), **CPU en mode performance** sur machine physique (la file interne de WireGuard ne déborde plus pendant les montées en fréquence : +15 % de débit tunnel mesuré sur un Ryzen) et **IPv6 de l'hôte désactivé** — toute la stack est IPv4, couper l'IPv6 évite les bordures v6 mal servies et les fuites silencieuses. Tout s'applique à chaud : **aucun redémarrage du tunnel** (le WireGuard du noyau ne dépend pas des buffers de sockets). L'état d'origine est sauvegardé **avant** la première application. |
 | **2) Restaurer les paramètres d'origine** | Retire les fichiers sysctl/limits du script et revient aux réglages d'avant la toute première optimisation. |
 | **3) Re-sonder le MTU (WireGuard)** | Relance la mesure du MTU réel du chemin et l'applique au tunnel, à `wg0.conf` et aux fichiers clients. Utile après un changement de FAI ou de box. |
 
@@ -185,7 +187,7 @@ L'état complet de la machine en un écran, sans rien modifier :
 | **5) Supprimer un client** | Confirmation par saisie du **nom exact**. Retire tout : peer (coupé à chaud), DNAT/SNAT, limites tc, fichier `.conf`. |
 
 > [!NOTE]
-> Les fichiers clients contiennent `AllowedIPs = 0.0.0.0/0, ::/0` : **tout** le trafic de la machine cliente passe par le VPN, IPv6 compris (le serveur bloque proprement l'IPv6 du tunnel pour éviter toute fuite). Un nom de client fait 32 caractères max (lettres, chiffres, `-`, `_`) ; au-delà de 15, renomme le fichier `.conf` sur la machine cliente avant `wg-quick up` (limite du noyau sur les noms d'interface).
+> Les fichiers clients contiennent `AllowedIPs = 0.0.0.0/0, ::/0` : **tout** le trafic de la machine cliente passe par le VPN, IPv6 compris : le tunnel est IPv4 et le serveur ne route pas l'IPv6, qui meurt dans le tunnel au lieu de fuir à côté. Un nom de client fait 32 caractères max (lettres, chiffres, `-`, `_`) ; au-delà de 15, renomme le fichier `.conf` sur la machine cliente avant `wg-quick up` (limite du noyau sur les noms d'interface).
 
 ### 6 · Pare-feu & sécurité
 
@@ -331,6 +333,18 @@ Tout est **généré depuis l'état** de `/etc/net-manager/` — on ne modifie j
 
 ---
 
+## 🤝 Avec LaboBox-VPN
+
+Network-WireGuard-Manager est le côté **serveur** de [LaboBox-VPN](https://github.com/CLusmi/Labobox-VPN-Manager) : chaque seedbox LaboBox sort par un client WireGuard de ce serveur. Les deux outils se parlent par un seul fichier, le `.conf` du client, et partagent les mêmes réglages réseau.
+
+- **Le port** : crée le client avec le port rtorrent de la seedbox (`nwm client add alice --port 1101`). L'en-tête du `.conf` l'annonce (`# Type : seedbox (ports: tcp:1101)`) : LaboBox le lit à la création du client, t'alerte si les deux ports ne correspondent pas, puis teste le port pour de vrai depuis Internet.
+- **Le MTU** : la même sonde et le même calcul des deux côtés (PMTU − 60). Le serveur l'écrit dans le `.conf`, LaboBox le reprend et peut le baisser si la ligne de la seedbox l'exige — c'est le côté le plus petit qui fixe la taille des paquets, le serveur n'a rien à changer.
+- **Le keepalive** : 25 s des deux côtés, ce qui garde le tunnel ouvert à travers la box de la seedbox (indispensable pour le port redirigé).
+- **Les optimisations** : les deux optimiseurs appliquent la même base (buffers, TCP, conntrack, carte réseau, CPU, IPv6 coupé) ; chacun y ajoute ce qui compte chez lui — le routage ici, l'écriture vers le NAS côté LaboBox.
+- **Les mesures** : le banc d'essai (menu 7 → 7) donne à LaboBox une cible iperf3 interne au tunnel pour mesurer ce serveur dans les deux sens, sans rien exposer à Internet.
+
+---
+
 ## 🩺 Dépannage rapide
 
 | Symptôme | Piste |
@@ -338,7 +352,7 @@ Tout est **généré depuis l'état** de `/etc/net-manager/` — on ne modifie j
 | Le client ne se connecte pas (pas de handshake) | Redirection `51820/udp` manquante sur la box, ou IP publique qui a changé → menu 9 → 2 (les `.conf` sont regénérés, à redistribuer). |
 | Connecté mais pas d'Internet via le VPN | `nwm fw apply` (plomberie NAT/FORWARD), puis `nwm status`. |
 | Débit faible, connexions qui rament | Menu 4 → 2 : sonder le MTU (PPPoE et tunnels réduisent le MTU réel). |
-| Seedbox « non connectable » | Port du client torrent ≠ port forwardé, ou redirection box manquante pour ce port. |
+| Seedbox « non connectable » | Port du client torrent ≠ port forwardé (LaboBox le signale à la création du client), ou redirection box manquante pour ce port. |
 | Je me suis bloqué avec le pare-feu | Attendre 90 s : le filet anti-lockout restaure les règles précédentes tout seul. Sinon console physique/VNC → `nwm fw rollback`. |
 | iperf3 échoue vers un serveur public | Serveur occupé (réessaie), ou mauvais port : beaucoup écoutent sur 5200-5209. |
 | `nwm` ne répond plus après un `git pull` | Menu 9 → 3 : (ré)installer le binaire. |
@@ -353,19 +367,37 @@ Journal détaillé : `/var/log/net-manager.log`.
 ```
 ├── network-wireguard-manager.sh   ← LE script, assemblé, prêt à l'emploi
 ├── src/                           ← sources découpées par module (pour développer)
+│   ├── 00_header.sh               ← version, chemins, valeurs par défaut
 │   ├── 01_lib.sh                  ← affichage, invites, validation des entrées
+│   ├── 02_env.sh                  ← détection de l'environnement et de l'interface
+│   ├── 03_state.sh                ← état (/etc/net-manager), fiches clients
 │   ├── 10_firewall.sh             ← moteur pare-feu déclaratif (chaînes NM-*)
+│   ├── 11_tc.sh                   ← limites de débit par client (tc)
 │   ├── 20_wireguard.sh            ← serveur + clients WireGuard
 │   ├── 30_docker.sh               ← installation et intégration Docker
 │   ├── 40_optimizer.sh            ← profils d'optimisation réseau
+│   ├── 45_service.sh              ← binaire installé + service de boot
+│   ├── 46_bench.sh                ← banc d'essai LaboBox (iperf3 interne)
 │   ├── 50_supervision.sh          ← tableau de bord, monitoring, iperf3
+│   ├── 60_backup.sh               ← sauvegardes / restaurations
+│   ├── 80_cli.sh                  ← commandes non interactives (nwm …)
 │   ├── 90_menus.sh                ← tous les menus interactifs
-│   └── …
+│   └── 95_main.sh                 ← point d'entrée
 ├── build.sh                       ← assemble src/*.sh → le script final (dév uniquement)
 └── vpn_clients/                   ← créé automatiquement, jamais committé (clés privées)
 ```
 
 Pour modifier : éditer `src/`, puis `bash build.sh` (build déterministe, `bash -n` inclus). Les utilisateurs n'ont **jamais** besoin de builder : le script assemblé est committé prêt à l'emploi.
+
+---
+
+## 📝 Version 5.0.0
+
+**Network-WireGuard-Manager et LaboBox-VPN passent ensemble en 5.0.0** : même numéro, mêmes réglages réseau, vérifiés l'un avec l'autre.
+
+- **Optimisation harmonisée avec LaboBox** — les deux optimiseurs appliquent maintenant exactement la même base ; la détection des IRQ couvre aussi les cartes virtio (VPS KVM, VM Proxmox).
+- **Plus de redémarrage du tunnel après l'optimisation** — la question a disparu : le WireGuard du noyau ne dépend pas des buffers de sockets, tout s'applique à chaud, sans couper les clients.
+- **Banc d'essai** — les indications pointent vers le bon menu de LaboBox (menu principal → 5 Benchmarks).
 
 ---
 

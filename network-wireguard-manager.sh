@@ -48,7 +48,7 @@ set -o pipefail
 # écrits en dur en français, ne sont pas concernés.
 export LC_ALL=C
 
-NM_VERSION="4.3.4"
+NM_VERSION="5.0.0"
 
 #--- Chemins système -----------------------------------------------------------
 # Tous surchargeables par variable d'environnement (utile pour les tests et
@@ -2281,8 +2281,10 @@ opt_compute() {
     (( OPT_NETDEV_BACKLOG > 65536 )) && OPT_NETDEV_BACKLOG=65536
 
     # Buffers réseau : plafond d'auto-tuning à 128 Mo, valeur initiale 4 Mo.
-    # rmem/wmem_default s'appliquent aussi aux sockets UDP, donc à WireGuard :
-    # 4 Mo suffisent à éviter les pertes UDP en multi-gigabit sans gaspiller.
+    # Le trafic des clients est ROUTÉ (aucun buffer de socket en jeu) et le
+    # WireGuard du noyau contourne ces buffers (son socket UDP interne a les
+    # siens) : ces valeurs servent aux connexions TCP locales du serveur —
+    # service de mesure iperf3, conteneurs Docker éventuels.
     OPT_RMEM_MAX=134217728
     OPT_WMEM_MAX=134217728
     OPT_RMEM_DEFAULT=4194304
@@ -2343,8 +2345,9 @@ net.ipv4.ip_forward = 1
 net.ipv4.conf.all.forwarding = 1
 
 # --- Buffers sockets ---------------------------------------------------------
-# max = plafond d'auto-tuning ; default = valeur initiale (UDP inclus, donc
-# WireGuard). Ne pas mettre default = max : chaque socket réserverait 128 Mo.
+# max = plafond d'auto-tuning ; default = valeur initiale des sockets locales
+# (le WireGuard du noyau n'en dépend pas). Ne pas mettre default = max :
+# chaque socket réserverait 128 Mo.
 net.core.rmem_max = ${OPT_RMEM_MAX}
 net.core.wmem_max = ${OPT_WMEM_MAX}
 net.core.rmem_default = ${OPT_RMEM_DEFAULT}
@@ -2356,7 +2359,7 @@ net.ipv4.tcp_rmem = 4096 ${OPT_TCP_RMEM_DEFAULT} ${OPT_RMEM_MAX}
 net.ipv4.tcp_wmem = 4096 ${OPT_TCP_WMEM_DEFAULT} ${OPT_WMEM_MAX}
 net.ipv4.tcp_moderate_rcvbuf = 1
 
-# --- Buffers UDP (WireGuard) -------------------------------------------------
+# --- Buffers UDP (minimum garanti par socket) --------------------------------
 net.ipv4.udp_rmem_min = 16384
 net.ipv4.udp_wmem_min = 16384
 
@@ -2584,7 +2587,13 @@ fi
 # ne touche ni aux IRQ ni à RPS/XPS.
 if [ "$PROFILE" != "pve-host" ]; then
     # Une file par cœur, en round-robin, uniquement les IRQ de la carte.
-    IRQS=$(grep -E "[[:space:]]${NIC}(-|$|[[:space:]])" /proc/interrupts 2>/dev/null | awk -F: '{print $1}' | tr -d ' ')
+    # Sur une vNIC virtio (VPS KVM, VM Proxmox), les IRQ n'apparaissent pas
+    # sous le nom de l'interface (ens3) mais sous celui du périphérique
+    # (virtio0-input.N / virtio0-output.N) : on résout le bon motif.
+    IRQ_PAT="$NIC"
+    VDEV=$(basename "$(readlink -f "/sys/class/net/$NIC/device" 2>/dev/null)" 2>/dev/null)
+    case "$VDEV" in virtio*) IRQ_PAT="$VDEV" ;; esac
+    IRQS=$(grep -E "[[:space:]]${IRQ_PAT}(-|\.|$|[[:space:]])" /proc/interrupts 2>/dev/null | awk -F: '{print $1}' | tr -d ' ')
     CPU=0
     for IRQ in $IRQS; do
         if [ -w "/proc/irq/$IRQ/smp_affinity_list" ]; then
@@ -2809,23 +2818,10 @@ EOF
     echo ""
     msg_ok "Optimisation appliquée (profil $profile). Un reboot est conseillé pour les limites."
 
-    # Le socket UDP de WireGuard fige ses buffers à sa création : tant que le
-    # tunnel n'est pas recréé, il tourne avec les anciens (défauts Debian,
-    # ~200 Ko) et droppe sous charge. Un reboot le recrée aussi.
+    # Aucun redémarrage du tunnel : le WireGuard du noyau ne dépend pas des
+    # buffers de sockets, et les réglages routés s'appliquent à chaud.
     if systemctl is-active --quiet "wg-quick@${WG_IF:-wg0}" 2>/dev/null; then
-        echo ""
-        if [[ "$assume_yes" == "yes" ]]; then
-            msg_warn "Tunnel ${WG_IF:-wg0} actif : redémarre-le pour que le socket WireGuard"
-            msg_warn "adopte les nouveaux buffers : systemctl restart wg-quick@${WG_IF:-wg0}"
-        elif ask_yn "Redémarrer le tunnel maintenant pour appliquer les buffers WireGuard (coupure ~5 s pour tous les clients) ?" "o"; then
-            if systemctl restart "wg-quick@${WG_IF:-wg0}" 2>/dev/null; then
-                msg_ok "Tunnel ${WG_IF:-wg0} redémarré — nouveaux buffers actifs."
-            else
-                msg_err "Échec du redémarrage : journalctl -u wg-quick@${WG_IF:-wg0}"
-            fi
-        else
-            msg_info "À faire plus tard : systemctl restart wg-quick@${WG_IF:-wg0} (ou reboot)."
-        fi
+        msg_info "Tunnel ${WG_IF:-wg0} : aucun redémarrage nécessaire, tout s'applique à chaud."
     fi
     return 0
 }
@@ -3030,7 +3026,7 @@ bench_svc_install() {
     nm_load_config
     if systemctl is-active --quiet nwm-bench.service; then
         msg_ok "iperf3 en écoute sur ${SERVER_IP}:5201 — réseau WireGuard uniquement."
-        msg_info "Les benchs LaboBox (menu Monitoring → Benchmarks) l'utiliseront"
+        msg_info "Les benchs LaboBox (menu principal → 5 Benchmarks) l'utiliseront"
         msg_info "automatiquement pour mesurer le tunnel dans les deux sens."
     else
         msg_err "Le service n'a pas démarré : journalctl -u nwm-bench"
@@ -3067,7 +3063,7 @@ bench_svc_status() {
 bench_menu() {
     while true; do
         print_banner
-        print_section "🧪 Banc d'essai LaboBox" "La cible que la VM mesure (menu Monitoring → Benchmarks côté LaboBox)"
+        print_section "🧪 Banc d'essai LaboBox" "La cible que la VM mesure (LaboBox : menu principal → 5 Benchmarks)"
         bench_svc_status
         echo ""
         echo "  1) Activer le service de mesure (iperf3, IP WireGuard interne)"
@@ -3117,7 +3113,7 @@ bench_peer_ensure() {
     sed 's/^/  /' "$conf_file"
     echo "  ${C_DIM}───────────────────────────────────────────────────────────────${C_NC}"
     echo ""
-    msg_info "Sur la VM : Monitoring → Benchmarks → « Tester un serveur VPN »,"
+    msg_info "Sur la VM : menu 5 Benchmarks → « Tester un serveur VPN candidat »,"
     msg_info "le manager demandera ce fichier à la première mesure de ce serveur."
     return 0
 }
