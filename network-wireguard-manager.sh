@@ -48,7 +48,7 @@ set -o pipefail
 # écrits en dur en français, ne sont pas concernés.
 export LC_ALL=C
 
-NM_VERSION="4.3.3"
+NM_VERSION="4.3.4"
 
 #--- Chemins système -----------------------------------------------------------
 # Tous surchargeables par variable d'environnement (utile pour les tests et
@@ -2459,12 +2459,14 @@ fs.inotify.max_user_watches = ${OPT_INOTIFY_WATCHES}
 fs.inotify.max_user_instances = 1024
 fs.aio-max-nr = 1048576
 
-# --- IPv6 --------------------------------------------------------------------
-net.ipv6.conf.all.accept_redirects = 0
-net.ipv6.conf.default.accept_redirects = 0
-net.ipv6.conf.all.accept_source_route = 0
-net.ipv6.conf.default.accept_source_route = 0
-net.ipv6.conf.all.forwarding = 1
+# --- IPv6 : désactivé --------------------------------------------------------
+# Toute la stack est IPv4 (endpoints WireGuard, NAT, seedbox) : couper
+# l'IPv6 de l'hôte évite les bordures v6 mal servies (404 sur des CDN,
+# résolutions lentes) et les surprises silencieuses. Le trafic v6 des
+# clients VPN (AllowedIPs ::/0) meurt dans le tunnel au lieu de fuir à
+# côté — comportement voulu. Restauration : optimize restore.
+net.ipv6.conf.all.disable_ipv6 = 1
+net.ipv6.conf.default.disable_ipv6 = 1
 EOF
 
     if [[ "$profile" == "pve-host" ]]; then
@@ -2758,6 +2760,7 @@ EOF
         echo "$errors" | sed 's/^/    /'
     fi
     msg_ok "Paramètres kernel appliqués."
+    msg_ok "IPv6 hôte désactivé (stack 100 % IPv4 — restauration : optimize restore)."
 
     local active_cc
     active_cc=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null)
@@ -2857,6 +2860,8 @@ opt_restore() {
     fi
 
     # Valeurs par défaut de Debian pour les clés les plus impactantes
+    sysctl -w net.ipv6.conf.all.disable_ipv6=0 >/dev/null 2>&1 || true
+    sysctl -w net.ipv6.conf.default.disable_ipv6=0 >/dev/null 2>&1 || true
     sysctl -w net.core.default_qdisc=fq_codel >/dev/null 2>&1 || true
     sysctl -w net.ipv4.tcp_congestion_control=cubic >/dev/null 2>&1 || true
     sysctl -w net.core.rmem_max=212992 >/dev/null 2>&1 || true

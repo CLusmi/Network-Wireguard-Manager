@@ -4,7 +4,7 @@
 
 **Toute la gestion réseau d'un serveur Debian en un seul script : VPN WireGuard, optimisation réseau, Docker et pare-feu — piloté par un menu clair, en français.**
 
-![Version](https://img.shields.io/badge/version-4.3.3-2ea44f)
+![Version](https://img.shields.io/badge/version-4.3.4-2ea44f)
 ![Debian](https://img.shields.io/badge/Debian-12%20%7C%2013-A81D33?logo=debian&logoColor=white)
 ![Bash](https://img.shields.io/badge/bash-uniquement-4EAA25?logo=gnubash&logoColor=white)
 ![WireGuard](https://img.shields.io/badge/VPN-WireGuard-88171A?logo=wireguard&logoColor=white)
@@ -14,7 +14,7 @@
 
 ```text
   ════════════════════════════════════════════════════════════════════════════
-  NETWORK-WIREGUARD-MANAGER                                             v4.3.3
+  NETWORK-WIREGUARD-MANAGER                                             v4.3.4
   Optimisation réseau · VPN WireGuard · Docker · Pare-feu
   ════════════════════════════════════════════════════════════════════════════
 
@@ -139,7 +139,7 @@ L'état complet de la machine en un écran, sans rien modifier :
 
 | Option | Ce qu'elle fait |
 |---|---|
-| **1) Appliquer l'optimisation** | Analyse CPU, RAM et carte réseau, puis applique le profil adapté à l'environnement détecté : congestion **BBR** + qdisc `fq`, buffers TCP/UDP dimensionnés d'après la RAM, table conntrack agrandie, `swappiness` abaissé, et tuning de la carte (files multi-cœurs `ethtool -L`, ring buffers, offloads dont **UDP-GRO forwarding**, RPS/XPS). L'état d'origine est sauvegardé **avant** la première application. |
+| **1) Appliquer l'optimisation** | Analyse CPU, RAM et carte réseau, puis applique le profil adapté à l'environnement détecté : congestion **BBR** + qdisc `fq`, buffers TCP/UDP dimensionnés d'après la RAM, table conntrack agrandie, `swappiness` abaissé, et tuning de la carte (files multi-cœurs `ethtool -L`, ring buffers, offloads dont **UDP-GRO forwarding**, RPS/XPS), et **IPv6 de l'hôte désactivé** — toute la stack est IPv4, couper l'IPv6 évite les bordures v6 mal servies et les fuites silencieuses. L'état d'origine est sauvegardé **avant** la première application. |
 | **2) Restaurer les paramètres d'origine** | Retire les fichiers sysctl/limits du script et revient aux réglages d'avant la toute première optimisation. |
 | **3) Re-sonder le MTU (WireGuard)** | Relance la mesure du MTU réel du chemin et l'applique au tunnel, à `wg0.conf` et aux fichiers clients. Utile après un changement de FAI ou de box. |
 
