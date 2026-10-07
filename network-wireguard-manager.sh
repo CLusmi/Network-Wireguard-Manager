@@ -48,7 +48,7 @@ set -o pipefail
 # écrits en dur en français, ne sont pas concernés.
 export LC_ALL=C
 
-NM_VERSION="5.0.0"
+NM_VERSION="5.0.1"
 
 #--- Chemins système -----------------------------------------------------------
 # Tous surchargeables par variable d'environnement (utile pour les tests et
@@ -743,6 +743,63 @@ ports_pretty() {
             echo "${proto}:${port} (tout Internet)"
         fi
     done < <(ports_list "$1")
+}
+
+#--- Désigner un port à fermer ------------------------------------------------
+# Comprend toutes les façons naturelles d'écrire un port : 6881, 6881/udp,
+# udp:6881, UDP:6881, « 6881 udp »… Sortie : « proto:port », proto vide s'il
+# n'est pas précisé. Code 1 si aucun port valide n'est reconnu.
+port_entry_parse() {
+    local raw="${1,,}" proto="" port=""
+    [[ "$raw" =~ (^|[^a-z])(tcp|udp)([^a-z]|$) ]] && proto="${BASH_REMATCH[2]}"
+    [[ "$raw" =~ ([0-9]+) ]] && port="${BASH_REMATCH[1]}"
+    is_valid_port "$port" || return 1
+    echo "${proto}:${port}"
+}
+
+# Désigne une entrée « proto:port[:sources] » parmi une liste affichée
+# numérotée : par son numéro dans la liste, ou par le port tapé (toutes les
+# écritures de port_entry_parse). Si le port est ouvert à la fois en tcp et
+# en udp sans précision, demande lequel. Résultat dans PICKED_ENTRY ; code 1
+# si rien ne correspond (message affiché) ou si l'utilisateur annule.
+# port_pick_entry <saisie> <entrée>...
+port_pick_entry() {
+    local input="${1//[[:space:]]/}"; shift
+    local entries=("$@") parsed proto port shown e rest pr
+    local matches=()
+    PICKED_ENTRY=""
+    [[ -n "$input" ]] || { msg_info "Annulé."; return 1; }
+    if [[ "$input" =~ ^[0-9]+$ ]] && (( 10#$input >= 1 && 10#$input <= ${#entries[@]} )); then
+        PICKED_ENTRY="${entries[10#$input - 1]}"
+        return 0
+    fi
+    parsed=$(port_entry_parse "$input") || { msg_err "Saisie non comprise : $input"; return 1; }
+    proto="${parsed%%:*}"; port="${parsed#*:}"
+    for e in "${entries[@]}"; do
+        rest="${e#*:}"
+        [[ "${rest%%:*}" == "$port" ]] || continue
+        [[ -z "$proto" || "${e%%:*}" == "$proto" ]] || continue
+        matches+=("$e")
+    done
+    if (( ${#matches[@]} == 0 )); then
+        shown="$port"; [[ -n "$proto" ]] && shown="${port}/${proto}"
+        msg_err "Port introuvable : ${shown} n'est pas dans la liste."
+        return 1
+    fi
+    if (( ${#matches[@]} > 1 )); then
+        nm_ask pr "Le port $port est ouvert en tcp ET en udp — lequel fermer ? (1=tcp, 2=udp) : " || true
+        case "${pr,,}" in
+            1|tcp) proto="tcp" ;;
+            2|udp) proto="udp" ;;
+            *) msg_info "Annulé."; return 1 ;;
+        esac
+        for e in "${matches[@]}"; do
+            [[ "${e%%:*}" == "$proto" ]] && { PICKED_ENTRY="$e"; return 0; }
+        done
+        return 1
+    fi
+    PICKED_ENTRY="${matches[0]}"
+    return 0
 }
 
 #--- IP bannies ----------------------------------------------------------------
@@ -1985,13 +2042,17 @@ client_add_port() {
 
 # Retire UN port redirigé d'un client
 client_remove_port() {
-    local name="$1" proto="$2" port="$3" entry new=""
+    local name="$1" proto="$2" port="$3" entry new="" found="no"
     client_load "$name" || { msg_err "Client '$name' introuvable."; return 1; }
     for entry in $CLIENT_PORTS; do
-        [[ "$entry" == "${proto}:${port}" ]] && continue
+        if [[ "$entry" == "${proto}:${port}" ]]; then
+            found="yes"
+            continue
+        fi
         new="${new:+$new }$entry"
     done
-    client_set "$name" ports "$new"
+    [[ "$found" == "yes" ]] || { msg_err "Port ${port}/${proto} introuvable pour le client '$name'."; return 1; }
+    client_set "$name" ports "$new" && msg_ok "Redirection ${port}/${proto} retirée."
 }
 
 # Âge du dernier handshake d'un client, en secondes. Échoue si le client ne
@@ -4107,11 +4168,17 @@ menu_client_edit() {
                 if [[ -z "$CLIENT_PORTS" ]]; then
                     msg_warn "Aucun port à retirer."
                 else
-                    echo "  Ports actuels : $CLIENT_PORTS"
-                    local entry
-                    nm_ask entry "Port à retirer (ex. tcp:1101) : " || true
-                    [[ "$entry" != *:* ]] && entry="tcp:$entry"
-                    client_remove_port "$name" "${entry%%:*}" "${entry#*:}"
+                    local entry e i=0 entries=()
+                    echo "  Ports redirigés vers ce client :"
+                    for e in $CLIENT_PORTS; do
+                        entries+=("$e")
+                        i=$((i + 1))
+                        echo "    $i) $e"
+                    done
+                    nm_ask entry "Numéro dans la liste (ou le port, ex. 6881/udp) : " || true
+                    if port_pick_entry "$entry" "${entries[@]}"; then
+                        client_remove_port "$name" "${PICKED_ENTRY%%:*}" "${PICKED_ENTRY#*:}"
+                    fi
                 fi
                 press_enter ;;
             3)
@@ -4404,6 +4471,27 @@ menu_firewall_bans() {
     done
 }
 
+# Ferme un port d'une liste du pare-feu (hôte ou conteneurs) : liste
+# numérotée, choix par numéro ou par port (6881, 6881/udp, udp:6881…). Le
+# succès n'est annoncé qu'après avoir vérifié que l'entrée a bien disparu.
+menu_close_port() {  # menu_close_port <fichier> <libellé du succès>
+    local file="$1" label="$2" entries=() i=0 line input proto rest port
+    mapfile -t entries < <(ports_list "$file")
+    while IFS= read -r line; do
+        i=$((i + 1))
+        echo "    $i) $line"
+    done < <(ports_pretty "$file")
+    nm_ask input "Numéro dans la liste (ou le port, ex. 6881/udp) : " || true
+    port_pick_entry "$input" "${entries[@]}" || return 1
+    proto="${PICKED_ENTRY%%:*}"; rest="${PICKED_ENTRY#*:}"; port="${rest%%:*}"
+    ports_remove "$file" "$proto" "$port"
+    if ports_list "$file" | grep -qE "^${proto}:${port}(:|$)"; then
+        msg_err "Le port ${port}/${proto} est toujours dans la liste : rien n'a été appliqué."
+        return 1
+    fi
+    fw_apply && msg_ok "${label} : ${port}/${proto}."
+}
+
 menu_firewall() {
     nm_detect_env
     nm_load_fw_config
@@ -4487,10 +4575,7 @@ menu_firewall() {
                     msg_info "Aucun port d'hôte ouvert."
                 else
                     echo "  Ports ouverts :"
-                    ports_pretty "$NM_PORTS_HOST" | sed 's/^/    /'
-                    nm_ask port "Port à fermer (ex. tcp:8080) : " || true
-                    [[ "$port" != *:* ]] && port="tcp:$port"
-                    ports_remove "$NM_PORTS_HOST" "${port%%:*}" "${port#*:}" && fw_apply && msg_ok "Port fermé."
+                    menu_close_port "$NM_PORTS_HOST" "Port fermé"
                 fi
                 press_enter ;;
             4)
@@ -4520,10 +4605,7 @@ menu_firewall() {
                     msg_info "Aucun port conteneur exposé."
                 else
                     echo "  Ports exposés :"
-                    ports_pretty "$NM_PORTS_DOCKER" | sed 's/^/    /'
-                    nm_ask port "Port à refermer (ex. tcp:8080) : " || true
-                    [[ "$port" != *:* ]] && port="tcp:$port"
-                    ports_remove "$NM_PORTS_DOCKER" "${port%%:*}" "${port#*:}" && fw_apply && msg_ok "Port refermé."
+                    menu_close_port "$NM_PORTS_DOCKER" "Port refermé"
                 fi
                 press_enter ;;
             6) menu_firewall_bans ;;

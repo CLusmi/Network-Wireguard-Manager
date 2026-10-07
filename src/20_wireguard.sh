@@ -497,13 +497,17 @@ client_add_port() {
 
 # Retire UN port redirigé d'un client
 client_remove_port() {
-    local name="$1" proto="$2" port="$3" entry new=""
+    local name="$1" proto="$2" port="$3" entry new="" found="no"
     client_load "$name" || { msg_err "Client '$name' introuvable."; return 1; }
     for entry in $CLIENT_PORTS; do
-        [[ "$entry" == "${proto}:${port}" ]] && continue
+        if [[ "$entry" == "${proto}:${port}" ]]; then
+            found="yes"
+            continue
+        fi
         new="${new:+$new }$entry"
     done
-    client_set "$name" ports "$new"
+    [[ "$found" == "yes" ]] || { msg_err "Port ${port}/${proto} introuvable pour le client '$name'."; return 1; }
+    client_set "$name" ports "$new" && msg_ok "Redirection ${port}/${proto} retirée."
 }
 
 # Âge du dernier handshake d'un client, en secondes. Échoue si le client ne

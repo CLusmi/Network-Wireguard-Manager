@@ -335,11 +335,17 @@ menu_client_edit() {
                 if [[ -z "$CLIENT_PORTS" ]]; then
                     msg_warn "Aucun port à retirer."
                 else
-                    echo "  Ports actuels : $CLIENT_PORTS"
-                    local entry
-                    nm_ask entry "Port à retirer (ex. tcp:1101) : " || true
-                    [[ "$entry" != *:* ]] && entry="tcp:$entry"
-                    client_remove_port "$name" "${entry%%:*}" "${entry#*:}"
+                    local entry e i=0 entries=()
+                    echo "  Ports redirigés vers ce client :"
+                    for e in $CLIENT_PORTS; do
+                        entries+=("$e")
+                        i=$((i + 1))
+                        echo "    $i) $e"
+                    done
+                    nm_ask entry "Numéro dans la liste (ou le port, ex. 6881/udp) : " || true
+                    if port_pick_entry "$entry" "${entries[@]}"; then
+                        client_remove_port "$name" "${PICKED_ENTRY%%:*}" "${PICKED_ENTRY#*:}"
+                    fi
                 fi
                 press_enter ;;
             3)
@@ -632,6 +638,27 @@ menu_firewall_bans() {
     done
 }
 
+# Ferme un port d'une liste du pare-feu (hôte ou conteneurs) : liste
+# numérotée, choix par numéro ou par port (6881, 6881/udp, udp:6881…). Le
+# succès n'est annoncé qu'après avoir vérifié que l'entrée a bien disparu.
+menu_close_port() {  # menu_close_port <fichier> <libellé du succès>
+    local file="$1" label="$2" entries=() i=0 line input proto rest port
+    mapfile -t entries < <(ports_list "$file")
+    while IFS= read -r line; do
+        i=$((i + 1))
+        echo "    $i) $line"
+    done < <(ports_pretty "$file")
+    nm_ask input "Numéro dans la liste (ou le port, ex. 6881/udp) : " || true
+    port_pick_entry "$input" "${entries[@]}" || return 1
+    proto="${PICKED_ENTRY%%:*}"; rest="${PICKED_ENTRY#*:}"; port="${rest%%:*}"
+    ports_remove "$file" "$proto" "$port"
+    if ports_list "$file" | grep -qE "^${proto}:${port}(:|$)"; then
+        msg_err "Le port ${port}/${proto} est toujours dans la liste : rien n'a été appliqué."
+        return 1
+    fi
+    fw_apply && msg_ok "${label} : ${port}/${proto}."
+}
+
 menu_firewall() {
     nm_detect_env
     nm_load_fw_config
@@ -715,10 +742,7 @@ menu_firewall() {
                     msg_info "Aucun port d'hôte ouvert."
                 else
                     echo "  Ports ouverts :"
-                    ports_pretty "$NM_PORTS_HOST" | sed 's/^/    /'
-                    nm_ask port "Port à fermer (ex. tcp:8080) : " || true
-                    [[ "$port" != *:* ]] && port="tcp:$port"
-                    ports_remove "$NM_PORTS_HOST" "${port%%:*}" "${port#*:}" && fw_apply && msg_ok "Port fermé."
+                    menu_close_port "$NM_PORTS_HOST" "Port fermé"
                 fi
                 press_enter ;;
             4)
@@ -748,10 +772,7 @@ menu_firewall() {
                     msg_info "Aucun port conteneur exposé."
                 else
                     echo "  Ports exposés :"
-                    ports_pretty "$NM_PORTS_DOCKER" | sed 's/^/    /'
-                    nm_ask port "Port à refermer (ex. tcp:8080) : " || true
-                    [[ "$port" != *:* ]] && port="tcp:$port"
-                    ports_remove "$NM_PORTS_DOCKER" "${port%%:*}" "${port#*:}" && fw_apply && msg_ok "Port refermé."
+                    menu_close_port "$NM_PORTS_DOCKER" "Port refermé"
                 fi
                 press_enter ;;
             6) menu_firewall_bans ;;

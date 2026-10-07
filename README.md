@@ -4,7 +4,7 @@
 
 **Toute la gestion réseau d'un serveur Debian en un seul script : VPN WireGuard, optimisation réseau, Docker et pare-feu — piloté par un menu clair, en français.**
 
-![Version](https://img.shields.io/badge/version-5.0.0-2ea44f)
+![Version](https://img.shields.io/badge/version-5.0.1-2ea44f)
 ![Debian](https://img.shields.io/badge/Debian-12%20%7C%2013-A81D33?logo=debian&logoColor=white)
 ![Bash](https://img.shields.io/badge/bash-uniquement-4EAA25?logo=gnubash&logoColor=white)
 ![WireGuard](https://img.shields.io/badge/VPN-WireGuard-88171A?logo=wireguard&logoColor=white)
@@ -14,7 +14,7 @@
 
 ```text
   ════════════════════════════════════════════════════════════════════════════
-  NETWORK-WIREGUARD-MANAGER                                             v5.0.0
+  NETWORK-WIREGUARD-MANAGER                                             v5.0.1
   Optimisation réseau · VPN WireGuard · Docker · Pare-feu
   ════════════════════════════════════════════════════════════════════════════
 
@@ -68,7 +68,7 @@ Pensé pour un cas d'usage précis : **monter un VPN WireGuard sur un serveur po
 10. [Avec LaboBox-VPN](#-avec-labobox-vpn)
 11. [Dépannage rapide](#-dépannage-rapide)
 12. [Structure du dépôt & développement](#-structure-du-dépôt--développement)
-13. [Version 5.0.0](#-version-500)
+13. [Version 5.0.1](#-version-501)
 
 ---
 
@@ -181,7 +181,7 @@ L'état complet de la machine en un écran, sans rien modifier :
 | Option | Ce qu'elle fait |
 |---|---|
 | **1) Créer un client** | Assistant complet : nom → **port forwardé** optionnel (suggestion automatique, ex. `1101` pour une seedbox) → **DNS** (Google, Cloudflare, Quad9, OpenDNS, AdGuard, personnalisé, ou aucun) → **limite de débit** optionnelle → **QR code** à scanner. Le fichier `.conf` est exporté dans `vpn_clients/` et le serveur, le pare-feu et les limites sont mis à jour dans la foulée. |
-| **2) Fiche client** | Tout d'un client sur un écran, et six actions : **ouvrir/fermer un port** redirigé, **changer le DNS**, **limites de débit** download/upload (Mo/s, 0 = illimité), **IP publique de sortie dédiée** (si le serveur a plusieurs IP), **afficher la config + QR code**. |
+| **2) Fiche client** | Tout d'un client sur un écran, et six actions : **ouvrir/fermer un port** redirigé (pour fermer, on choisit le port dans la liste), **changer le DNS**, **limites de débit** download/upload (Mo/s, 0 = illimité), **IP publique de sortie dédiée** (si le serveur a plusieurs IP), **afficher la config + QR code**. |
 | **3) Lister les clients** | Tableau : IP VPN, type, ports, limites, IP de sortie, état **en ligne / hors ligne**. |
 | **4) Exporter tous les fichiers .conf** | Ré-exporte tout le dossier `vpn_clients/` (utile après une restauration ou pour changer l'emplacement : `nwm client export /chemin`). |
 | **5) Supprimer un client** | Confirmation par saisie du **nom exact**. Retire tout : peer (coupé à chaud), DNAT/SNAT, limites tc, fichier `.conf`. |
@@ -198,8 +198,8 @@ Sur un **hôte Proxmox**, ce menu s'efface si pve-firewall est actif ; s'il est 
 | Option | Ce qu'elle fait |
 |---|---|
 | **1) Configurer** | Assistant : port SSH (détecté automatiquement) → **IP autorisées en SSH** (ta session actuelle est proposée par défaut ; sur IP dynamique, préfère la plage de ton FAI, ex. `82.65.0.0/16`) → IPv6 optionnelles → **filtrage des conteneurs Docker** (recommandé). Installe et configure **fail2ban**, puis applique avec le **filet anti-lockout**. |
-| **2) / 3) Ouvrir / fermer un port de l'hôte** | Liste blanche des ports du serveur lui-même, avec le choix de l'exposition : **tout Internet**, ou **seulement des IP/plages précises** — ex. `22110/tcp` accessible uniquement depuis `212.114.16.76`. Un port restreint par IPv4 n'est pas ouvert en IPv6 (la restriction serait sinon contournable). Ré-ouvrir un port permet de changer sa restriction. |
-| **4) / 5) Exposer / refermer un port de conteneur** | Sans cette liste blanche, **un port publié par Docker est accessible depuis Internet même pare-feu fermé** (Docker contourne INPUT). Ici tu choisis exactement lesquels sont publics — indique le port *publié* côté hôte (le `8080` de `-p 8080:80`) — et pour qui : **tout Internet ou des IP choisies**, comme pour les ports de l'hôte. |
+| **2) / 3) Ouvrir / fermer un port de l'hôte** | Liste blanche des ports du serveur lui-même, avec le choix de l'exposition : **tout Internet**, ou **seulement des IP/plages précises** — ex. `22110/tcp` accessible uniquement depuis `212.114.16.76`. Un port restreint par IPv4 n'est pas ouvert en IPv6 (la restriction serait sinon contournable). Ré-ouvrir un port permet de changer sa restriction. Pour fermer, on choisit le port dans la liste numérotée — ou on le tape, en tcp comme en udp (`6881`, `6881/udp`, `udp:6881`). |
+| **4) / 5) Exposer / refermer un port de conteneur** | Sans cette liste blanche, **un port publié par Docker est accessible depuis Internet même pare-feu fermé** (Docker contourne INPUT). Ici tu choisis exactement lesquels sont publics — indique le port *publié* côté hôte (le `8080` de `-p 8080:80`) — et pour qui : **tout Internet ou des IP choisies**, comme pour les ports de l'hôte. On le referme de la même façon, en le choisissant dans la liste. |
 | **6) Bannir / débannir une IP** | **Blocage total** d'une IP ou d'une plage CIDR (IPv4 ou IPv6) : les règles de bannissement sont placées **en tête de chaîne, avant même les connexions établies** — l'IP perd instantanément tout accès (SSH, VPN, ports, conteneurs), même une session en cours. Actif même pare-feu « désactivé ». Garde-fou intégré : si tu tentes de bannir ta propre IP (session SSH ou IP admin), le script te prévient avant. |
 | **7) État de la sécurité** | Le bloc pare-feu du tableau de bord : filtrage, SSH, conteneurs, fail2ban, **IP bannies** et liste détaillée des ports ouverts avec leur exposition. |
 | **8) Ré-appliquer les règles** | Regénère et réapplique tout, avec le filet anti-lockout. |
@@ -391,9 +391,11 @@ Pour modifier : éditer `src/`, puis `bash build.sh` (build déterministe, `bash
 
 ---
 
-## 📝 Version 5.0.0
+## 📝 Version 5.0.1
 
-**Network-WireGuard-Manager et LaboBox-VPN passent ensemble en 5.0.0** : même numéro, mêmes réglages réseau, vérifiés l'un avec l'autre.
+- **Correctif : fermer un port UDP** — dans les trois menus qui referment un port (fiche client, ports de l'hôte, ports de conteneurs), taper seulement le numéro d'un port ouvert en UDP ne le fermait pas, alors que le script affichait « Port fermé ». On choisit maintenant le port dans une liste numérotée, ou on le tape comme on veut (`6881`, `6881/udp`, `udp:6881`, majuscules comprises) ; si le même numéro est ouvert en TCP et en UDP, le script demande lequel. « Fermé » ne s'affiche que si le port a vraiment été fermé.
+
+**Network-WireGuard-Manager et LaboBox-VPN sont passés ensemble en 5.0** : même base de réglages réseau, vérifiés l'un avec l'autre.
 
 - **Optimisation harmonisée avec LaboBox** — les deux optimiseurs appliquent maintenant exactement la même base ; la détection des IRQ couvre aussi les cartes virtio (VPS KVM, VM Proxmox).
 - **Plus de redémarrage du tunnel après l'optimisation** — la question a disparu : le WireGuard du noyau ne dépend pas des buffers de sockets, tout s'applique à chaud, sans couper les clients.
